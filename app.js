@@ -70,7 +70,7 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const cad = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'CAD' });
 const money = (n) => usd.format(Math.round(n * 100) / 100 || 0);
-const fmtBill = (amount, currency) => (currency === 'CAD' ? cad : usd).format(amount);
+const fmtBill = (amount, currency) => (currency === 'CAD' ? cad.format(amount) : 'US' + usd.format(amount));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function monthKey(ts) {
@@ -108,15 +108,11 @@ function dayLabel(ts) {
   if (k === yest) return 'Yesterday';
   return new Date(ts).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
-// datetime-local <-> timestamp (local time, seconds precision)
+// Timestamp -> "YYYY-MM-DDTHH:MM:SS" in local time (used in the CSV export)
 function toLocalInput(ts) {
   const d = new Date(ts);
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-function fromLocalInput(v) {
-  if (!v) return NaN;
-  return new Date(v).getTime(); // "YYYY-MM-DDTHH:MM[:SS]" parses as local time
 }
 
 const segMs = (seg, now = Date.now()) => (seg.end ?? now) - seg.start;
@@ -239,26 +235,97 @@ function renderTimerButtons() {
   $('t-discard').hidden = !S.timer;
 }
 
-function monthGross(key) {
+/** Earnings for a month. With `beforeTs`, only entries started before then (used for "today"). */
+function monthGross(key, beforeTs = Infinity) {
   let g = 0, ms = 0;
   for (const e of S.entries) {
-    if (monthKey(entryStart(e)) === key) { g += entryGross(e); ms += entryMs(e); }
+    const st = entryStart(e);
+    if (monthKey(st) === key && st < beforeTs) { g += entryGross(e); ms += entryMs(e); }
   }
-  if (S.timer && monthKey(S.timer.segments[0].start) === key) {
-    const t = timerMs(); ms += t; g += (t / HOUR) * S.timer.rate;
+  if (S.timer) {
+    const st = S.timer.segments[0].start;
+    if (monthKey(st) === key && st < beforeTs) { const t = timerMs(); ms += t; g += (t / HOUR) * S.timer.rate; }
   }
   return { gross: g, ms, outside: S.outside[key] || 0 };
 }
 
+function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+const sortedBills = () => S.bills.map((b) => ({ ...b, usd: billUsd(b) })).sort((a, b) => a.usd - b.usd);
+const toBillCurrency = (usdAmt, b) => (b.currency === 'CAD' ? usdAmt / S.fx.rate : usdAmt);
+const isDone = (put, b) => b.usd <= 0 || put >= b.usd - 0.005;
+
+/** USD put toward each bill (keyed by id) out of `net` dollars. `bills` must be sorted smallest first. */
+function allocate(net, bills) {
+  const total = bills.reduce((a, b) => a + b.usd, 0);
+  const out = {};
+  let left = Math.max(0, net);
+  for (const b of bills) {
+    let put;
+    if (S.settings.allocation === 'smallest') { put = Math.min(left, b.usd); left -= put; }
+    else put = total > 0 ? Math.min(b.usd, Math.max(0, net) * (b.usd / total)) : 0;
+    out[b.id] = Math.max(0, put);
+  }
+  return out;
+}
+
+/** What today's work did: earnings, and how much went to each bill. */
+function todayBreakdown(bills) {
+  const cur = monthKey(Date.now());
+  const all = monthGross(cur);
+  const before = monthGross(cur, startOfToday());
+  const total = bills.reduce((a, b) => a + b.usd, 0);
+  const netAll = toNet(all.gross + all.outside);
+  const netBefore = toNet(before.gross + all.outside);
+  const putAll = allocate(netAll, bills);
+  const putBefore = allocate(netBefore, bills);
+  const perBill = {};
+  for (const b of bills) {
+    const diff = putAll[b.id] - putBefore[b.id];
+    if (diff > 0.004) perBill[b.id] = { usd: diff, finished: isDone(putAll[b.id], b) && !isDone(putBefore[b.id], b) };
+  }
+  return {
+    gross: all.gross - before.gross,
+    ms: all.ms - before.ms,
+    perBill,
+    putAll,
+    extra: Math.max(0, netAll - total) - Math.max(0, netBefore - total),
+  };
+}
+
+function renderToday(bills, today) {
+  $('today-total').textContent = today.ms > 0 ? `${money(today.gross)} · ${fmtHours(today.ms)}` : '';
+  if (today.ms <= 0) {
+    $('today-body').innerHTML = `<p class="muted small">Nothing logged yet today. Start the timer to chip away at your bills.</p>`;
+    return;
+  }
+  const items = bills.filter((b) => today.perBill[b.id]).map((b) => {
+    const t = today.perBill[b.id];
+    return `<div class="today-item ${t.finished ? 'finished' : ''}">
+      <span>${t.finished ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}${t.finished ? ' <span class="muted">paid off</span>' : ''}</span>
+      <span class="today-amt">+${esc(fmtBill(toBillCurrency(t.usd, b), b.currency))}</span>
+    </div>`;
+  });
+  if (today.extra > 0.004) items.push(`<div class="today-item finished"><span>Extra beyond bills</span><span class="today-amt">+${money(today.extra)}</span></div>`);
+  const next = bills.find((b) => !isDone(today.putAll[b.id], b));
+  const nextLine = next && S.settings.allocation === 'smallest'
+    ? `<p class="muted small next-up">Next to pay off: ${esc(next.name || 'Bill')} · ${esc(fmtBill(toBillCurrency(next.usd - today.putAll[next.id], next), next.currency))} to go</p>`
+    : '';
+  $('today-body').innerHTML = (items.length ? items.join('') : `<p class="muted small">Add bills to see where today's money goes.</p>`) + nextLine;
+}
+
 function renderBills() {
+  const isCurrent = viewMonth === monthKey(Date.now());
   $('m-label').textContent = monthLabel(viewMonth);
   $('m-next').disabled = viewMonth >= monthKey(Date.now());
   $('m-next').style.visibility = viewMonth >= monthKey(Date.now()) ? 'hidden' : 'visible';
 
+  const bills = sortedBills();
+  const today = todayBreakdown(bills);
+  renderToday(bills, today);
+
   const { gross, ms, outside } = monthGross(viewMonth);
   const totalGross = gross + outside;
   const net = toNet(totalGross);
-  const bills = S.bills.map((b) => ({ ...b, usd: billUsd(b) })).sort((a, b) => a.usd - b.usd);
   const total = bills.reduce((a, b) => a + b.usd, 0);
   const extra = Math.max(0, net - total);
   const tax = S.settings.taxEnabled;
@@ -295,20 +362,24 @@ function renderBills() {
     $('bill-list').innerHTML = `<div class="empty">Add your monthly bills to see how close you are to covering them.<br><button class="primary" id="empty-add-bills">Add bills</button></div>`;
     $('empty-add-bills').onclick = openBills;
   } else {
-    let left = net, covered = 0;
-    $('bill-list').innerHTML = bills.map((b) => {
-      let put;
-      if (alloc === 'smallest') { put = Math.min(left, b.usd); left -= put; }
-      else put = total > 0 ? Math.min(b.usd, net * (b.usd / total)) : 0;
-      put = Math.max(0, put);
-      const done = b.usd <= 0 || put >= b.usd - 0.005;
-      if (done) covered++;
+    const puts = allocate(net, bills);
+    // Unfinished bills first (smallest first), paid-off bills at the bottom.
+    const rows = bills.map((b) => ({ b, put: puts[b.id], done: isDone(puts[b.id], b) }))
+      .sort((x, y) => (x.done - y.done) || (x.b.usd - y.b.usd));
+    const covered = rows.filter((r) => r.done).length;
+    $('bill-list').innerHTML = rows.map(({ b, put, done }) => {
       const w = b.usd > 0 ? (put / b.usd) * 100 : 100;
-      const sub = b.currency === 'CAD' ? `<span class="sub">≈ ${money(b.usd)} USD</span>` : '';
-      return `<div class="bill-row">
-        <div class="bill-name">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name)}</div>
+      const have = toBillCurrency(put, b);
+      const sub = done
+        ? `${esc(fmtBill(b.amount, b.currency))} · paid off`
+        : `${esc(fmtBill(have, b.currency))} of ${esc(fmtBill(b.amount, b.currency))}`;
+      const t = isCurrent ? today.perBill[b.id] : null;
+      const right = done ? '<span class="covered-label">Covered</span>' : `${esc(fmtBill(b.amount - have, b.currency))} <span class="muted">to go</span>`;
+      const usdTip = b.currency === 'CAD' ? ` title="≈ ${money(b.usd)} USD"` : '';
+      return `<div class="bill-row ${done ? 'is-done' : ''}"${usdTip}>
+        <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}</div><div class="bill-sub">${sub}</div></div>
         <div class="bar ${done ? 'done' : ''}"><div style="width:${w}%"></div></div>
-        <div class="bill-amt"><span class="pill">${b.currency}</span>${esc(fmtBill(b.amount, b.currency))}${sub}</div>
+        <div class="bill-amt">${right}${t ? `<span class="today-tag">+${esc(fmtBill(toBillCurrency(t.usd, b), b.currency))} today</span>` : ''}</div>
       </div>`;
     }).join('');
     $('covered').textContent = `${covered} of ${bills.length} bills covered`;
@@ -379,71 +450,189 @@ function renderAll() {
 }
 
 // ---------- Entry dialog (edit + manual add) ----------
+//
+// Each time block is {start, ms}. Fields only write back to a block when you
+// change them, so untouched values keep their exact millisecond precision.
 
-let editing = null; // {id|null, segments:[{start,end, origStart, origEnd}]}
+let editing = null; // {id|null, blocks: [{start, ms}]}
+
+const MIN = 60e3;
+const pad2 = (n) => String(n).padStart(2, '0');
+const timeOfDay = (ts) => { const d = new Date(ts); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+const totalBlockMs = () => editing.blocks.reduce((a, b) => a + b.ms, 0);
+
+/** Same calendar day as `ts`, at the "HH:MM" given. */
+function setTimeOfDay(ts, hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+  const d = new Date(ts);
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+}
 
 function openEntry(id) {
   const e = id ? S.entries.find((x) => x.id === id) : null;
-  const now = Date.now();
-  const roundedNow = Math.floor(now / 60000) * 60000;
+  const roundedNow = Math.floor(Date.now() / MIN) * MIN;
   editing = {
     id: e?.id || null,
-    segments: e
-      ? e.segments.map((s) => ({ start: s.start, end: s.end }))
-      : [{ start: roundedNow - HOUR, end: roundedNow }],
+    blocks: e
+      ? e.segments.map((s) => ({ start: s.start, ms: s.end - s.start })).sort((a, b) => a.start - b.start)
+      : [{ start: roundedNow - HOUR, ms: HOUR }],
   };
   $('entry-title').textContent = e ? 'Edit entry' : 'Add time';
   $('e-desc').value = e?.desc || '';
   $('e-project').value = e ? (projectById(e.projectId)?.name || e.projectName || '') : $('t-project').value;
   $('e-rate').value = e ? e.rate : currentRate();
   $('e-error').textContent = '';
-  renderSegEditor();
+  renderEntryEditor();
   $('entry-dialog').showModal();
+  $('e-m').focus();
+  $('e-m').select();
 }
 
-function renderSegEditor() {
-  const multi = editing.segments.length > 1;
-  $('e-segments').innerHTML = editing.segments.map((s, i) => `
-    <div class="seg-row" data-i="${i}">
-      <label class="field"><span>Start</span><input type="datetime-local" step="1" data-k="start" value="${toLocalInput(s.start)}" required></label>
-      <label class="field"><span>End</span><input type="datetime-local" step="1" data-k="end" value="${toLocalInput(s.end)}" required></label>
-      <button type="button" class="ghost danger-text" data-rm="${i}" aria-label="Remove time block" ${multi ? '' : 'hidden'}>✕</button>
-    </div>`).join('');
-  updateSegSummary();
+function renderDateOptions() {
+  const sel = localDateStr(editing.blocks[0].start);
+  const opts = [];
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  for (let i = 0; i < 120; i++) {
+    const k = localDateStr(d.getTime());
+    opts.push([k, i === 0 ? 'Today' : i === 1 ? 'Yesterday' : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })]);
+    d.setDate(d.getDate() - 1);
+  }
+  if (!opts.some(([k]) => k === sel)) {
+    opts.push([sel, new Date(editing.blocks[0].start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })]);
+  }
+  $('e-date').innerHTML = opts.map(([k, label]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(label)}</option>`).join('');
 }
 
-/** Read inputs back into editing.segments. Untouched inputs keep their exact original millisecond value. */
-function readSegInputs() {
-  $('e-segments').querySelectorAll('.seg-row').forEach((row) => {
-    const seg = editing.segments[+row.dataset.i];
-    row.querySelectorAll('input').forEach((inp) => {
-      const k = inp.dataset.k;
-      if (inp.value !== toLocalInput(seg[k])) seg[k] = fromLocalInput(inp.value);
-    });
+function fillDuration() {
+  const totalMin = Math.floor(totalBlockMs() / MIN);
+  $('e-h').value = Math.floor(totalMin / 60);
+  $('e-m').value = totalMin % 60;
+}
+
+function renderEntryEditor() {
+  const multi = editing.blocks.length > 1;
+  renderDateOptions();
+  $('e-start-wrap').hidden = multi;
+  $('e-start').value = timeOfDay(editing.blocks[0].start);
+  $('e-dur-label').textContent = multi ? 'Total duration (changes the last block)' : 'Duration';
+  fillDuration();
+  $('e-blocks').innerHTML = multi
+    ? `<div class="blocks-head">Time blocks · paused ${editing.blocks.length - 1}×</div>` + editing.blocks.map((b, i) => {
+        const min = Math.floor(b.ms / MIN);
+        return `<div class="block-row" data-i="${i}">
+          <span class="bl">Block ${i + 1}</span>
+          <input type="time" step="60" data-k="start" value="${timeOfDay(b.start)}" aria-label="Block ${i + 1} start time">
+          <input type="number" min="0" step="1" inputmode="numeric" data-k="h" value="${Math.floor(min / 60)}" aria-label="Block ${i + 1} hours"><span>h</span>
+          <input type="number" min="0" step="1" inputmode="numeric" data-k="m" value="${min % 60}" aria-label="Block ${i + 1} minutes"><span>m</span>
+          <button type="button" class="ghost danger-text" data-rm="${i}" aria-label="Remove block ${i + 1}">✕</button>
+        </div>`;
+      }).join('')
+    : '';
+  updateEntrySummary();
+}
+
+function readMinutes(hEl, mEl) {
+  const h = parseInt(hEl.value || '0', 10);
+  const m = parseInt(mEl.value || '0', 10);
+  if (!Number.isFinite(h) || !Number.isFinite(m) || h < 0 || m < 0) return NaN;
+  return h * 60 + m;
+}
+
+/** Set the entry's total duration. With several blocks, the last block absorbs the change. */
+function setTotalMs(ms) {
+  if (editing.blocks.length === 1) { editing.blocks[0].ms = ms; return true; }
+  const last = editing.blocks[editing.blocks.length - 1];
+  const others = totalBlockMs() - last.ms;
+  if (ms - others <= 0) return false;
+  last.ms = ms - others;
+  return true;
+}
+
+function updateEntrySummary() {
+  const blocks = editing.blocks;
+  const ms = totalBlockMs();
+  const rate = parseFloat($('e-rate').value) || 0;
+  const last = blocks[blocks.length - 1];
+  const ok = blocks.every((b) => Number.isFinite(b.start) && b.ms > 0);
+  $('e-summary').textContent = ok
+    ? `${fmtTime(blocks[0].start)} – ${fmtTime(last.start + last.ms)} · ${fmtClock(ms)} · ${money((ms / HOUR) * rate)}`
+    : '';
+}
+
+function onEntryField(ev) {
+  const t = ev.target;
+  $('e-error').textContent = '';
+  if (t.id === 'e-date') {
+    const oldDay = new Date(localDateStr(editing.blocks[0].start) + 'T12:00:00');
+    const newDay = new Date(t.value + 'T12:00:00');
+    const diff = Math.round((newDay - oldDay) / 86400e3);
+    editing.blocks.forEach((b) => { const d = new Date(b.start); d.setDate(d.getDate() + diff); b.start = d.getTime(); });
+  } else if (t.id === 'e-start') {
+    const v = setTimeOfDay(editing.blocks[0].start, t.value);
+    if (Number.isFinite(v)) editing.blocks[0].start = v;
+  } else if (t.id === 'e-h' || t.id === 'e-m') {
+    const min = readMinutes($('e-h'), $('e-m'));
+    if (Number.isFinite(min) && min > 0) {
+      if (!setTotalMs(min * MIN)) $('e-error').textContent = "That's shorter than the earlier blocks. Edit or remove a block instead.";
+      else syncBlockRows();
+    }
+  } else if (t.closest('.block-row')) {
+    const row = t.closest('.block-row');
+    const b = editing.blocks[+row.dataset.i];
+    if (t.dataset.k === 'start') {
+      const v = setTimeOfDay(editing.blocks[0].start, t.value);
+      if (Number.isFinite(v)) {
+        b.start = v;
+        // A block that starts "earlier" than the previous one ran past midnight.
+        const prev = editing.blocks[+row.dataset.i - 1];
+        if (prev && b.start < prev.start) b.start += 86400e3;
+      }
+    } else {
+      const min = readMinutes(row.querySelector('[data-k=h]'), row.querySelector('[data-k=m]'));
+      if (Number.isFinite(min) && min > 0) b.ms = min * MIN;
+    }
+    if (document.activeElement !== $('e-h') && document.activeElement !== $('e-m')) fillDuration();
+  }
+  updateEntrySummary();
+}
+
+/** Refresh block rows' duration fields after the total changed (keeps focus where it is). */
+function syncBlockRows() {
+  $('e-blocks').querySelectorAll('.block-row').forEach((row) => {
+    const min = Math.floor(editing.blocks[+row.dataset.i].ms / MIN);
+    row.querySelector('[data-k=h]').value = Math.floor(min / 60);
+    row.querySelector('[data-k=m]').value = min % 60;
   });
 }
 
-function updateSegSummary() {
-  readSegInputs();
-  const ok = editing.segments.every((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start);
-  const ms = editing.segments.reduce((a, s) => a + (s.end > s.start ? s.end - s.start : 0), 0);
-  const rate = parseFloat($('e-rate').value) || 0;
-  $('e-summary').textContent = ok ? `Total ${fmtClock(ms)} · ${money((ms / HOUR) * rate)}` : '';
+function stepMinutes(delta) {
+  const cur = readMinutes($('e-h'), $('e-m'));
+  const next = (Number.isFinite(cur) ? cur : Math.floor(totalBlockMs() / MIN)) + delta;
+  if (next < 1) return;
+  if (!setTotalMs(next * MIN)) { $('e-error').textContent = "That's shorter than the earlier blocks. Edit or remove a block instead."; return; }
+  $('e-error').textContent = '';
+  fillDuration();
+  syncBlockRows();
+  updateEntrySummary();
 }
 
 function saveEntry(ev) {
   ev.preventDefault();
-  readSegInputs();
   const err = $('e-error');
   const rate = parseFloat($('e-rate').value);
   if (!Number.isFinite(rate) || rate < 0) { err.textContent = 'Enter an hourly rate.'; return; }
-  for (const s of editing.segments) {
-    if (!Number.isFinite(s.start) || !Number.isFinite(s.end)) { err.textContent = 'Fill in every start and end time.'; return; }
-    if (s.end <= s.start) { err.textContent = 'Each end time has to be after its start time.'; return; }
+  const totalMin = readMinutes($('e-h'), $('e-m'));
+  if (!Number.isFinite(totalMin) || totalMin < 1) { err.textContent = 'Enter a duration of at least 1 minute.'; return; }
+  for (const b of editing.blocks) {
+    if (!Number.isFinite(b.start)) { err.textContent = 'Enter a start time.'; return; }
+    if (!(b.ms > 0)) { err.textContent = 'Each time block needs at least 1 minute.'; return; }
   }
-  const segments = editing.segments.map((s) => ({ start: s.start, end: s.end })).sort((a, b) => a.start - b.start);
+  const segments = editing.blocks.map((b) => ({ start: b.start, end: b.start + b.ms })).sort((a, b) => a.start - b.start);
   for (let i = 1; i < segments.length; i++) {
-    if (segments[i].start < segments[i - 1].end) { err.textContent = 'Two time blocks overlap. Adjust them so they don\'t double-count.'; return; }
+    if (segments[i].start < segments[i - 1].end) { err.textContent = "Two time blocks overlap. Adjust a start time so they don't double-count."; return; }
   }
   const p = upsertProject($('e-project').value, rate);
   const data = { projectId: p?.id || null, projectName: p?.name || '', rate, desc: $('e-desc').value.trim(), segments };
@@ -680,25 +869,25 @@ function wire() {
 
   // Entry dialog
   $('entry-form').addEventListener('submit', saveEntry);
-  $('e-segments').addEventListener('input', () => { $('e-error').textContent = ''; updateSegSummary(); });
-  $('e-segments').addEventListener('click', (ev) => {
+  $('entry-form').addEventListener('input', (ev) => { if (ev.target.closest('#e-date, #e-start, #e-h, #e-m, .block-row')) onEntryField(ev); });
+  $('e-date').addEventListener('change', onEntryField);
+  ['e-h', 'e-m'].forEach((id) => $(id).addEventListener('blur', () => { if (Number.isFinite(readMinutes($('e-h'), $('e-m')))) fillDuration(); }));
+  $('entry-form').querySelectorAll('[data-step]').forEach((btn) => { btn.onclick = () => stepMinutes(+btn.dataset.step); });
+  $('e-blocks').addEventListener('click', (ev) => {
     const rm = ev.target.closest('[data-rm]');
-    if (!rm) return;
-    readSegInputs();
-    editing.segments.splice(+rm.dataset.rm, 1);
-    renderSegEditor();
+    if (!rm || editing.blocks.length < 2) return;
+    editing.blocks.splice(+rm.dataset.rm, 1);
+    renderEntryEditor();
   });
   $('e-add-seg').onclick = () => {
-    readSegInputs();
-    const last = editing.segments[editing.segments.length - 1];
-    const start = Number.isFinite(last?.end) ? last.end + 15 * 60e3 : Math.floor(Date.now() / 60000) * 60000;
-    editing.segments.push({ start, end: start + HOUR });
-    renderSegEditor();
+    const last = editing.blocks[editing.blocks.length - 1];
+    editing.blocks.push({ start: last.start + last.ms + 15 * MIN, ms: 30 * MIN });
+    renderEntryEditor();
   };
-  $('e-rate').addEventListener('input', () => { $('e-error').textContent = ''; updateSegSummary(); });
+  $('e-rate').addEventListener('input', () => { $('e-error').textContent = ''; updateEntrySummary(); });
   $('e-project').addEventListener('input', () => {
     const p = projectByName($('e-project').value);
-    if (p && !editing.id) { $('e-rate').value = p.rate; updateSegSummary(); }
+    if (p && !editing.id) { $('e-rate').value = p.rate; updateEntrySummary(); }
   });
 
   // Bills dialog

@@ -173,11 +173,24 @@ input:focus { border-color: var(--accent); outline: none; }
 .seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; margin-left: -1px; }
 .seg button.on { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent); position: relative; }
 
-.bill-row { display: grid; grid-template-columns: minmax(80px, 150px) minmax(0, 1fr) 120px; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
-.bill-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bill-name .tick { color: var(--success); font-weight: 700; margin-right: 4px; }
+.bill-row { display: grid; grid-template-columns: minmax(110px, 190px) minmax(0, 1fr) 130px; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.bill-name { min-width: 0; }
+.bill-name .bn { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bill-sub { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tick { color: var(--success); font-weight: 700; margin-right: 4px; }
 .bill-amt { text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.bill-amt .sub { display: block; color: var(--text-3); font-size: 12px; }
+.bill-row.is-done .bn { color: var(--text-2); }
+.covered-label { color: var(--success-text); font-weight: 600; }
+.today-tag { display: block; font-size: 12px; color: var(--accent-text); }
+
+/* Today */
+.today-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.today-total { font-weight: 600; font-variant-numeric: tabular-nums; }
+.today-item { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 14px; }
+.today-amt { font-weight: 600; color: var(--accent-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.today-item.finished .today-amt { color: var(--success-text); }
+.next-up { margin: 8px 0 0; }
+.today p { margin: 0; }
 .pill { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); color: var(--text-2); margin-right: 4px; vertical-align: 1px; }
 
 .empty { text-align: center; padding: 22px 8px; color: var(--text-2); }
@@ -216,9 +229,17 @@ dialog form, .dialog-body { padding: 20px; display: flex; flex-direction: column
 .error { color: var(--danger); font-size: 13px; min-height: 0; }
 .error:empty { display: none; }
 
-.seg-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; margin-bottom: 8px; }
-.seg-row .field > span { font-size: 12px; }
-.seg-row button { padding: 8px 10px; }
+.dur-edit { display: flex; align-items: center; gap: 8px; }
+.dur-part { display: flex; align-items: center; gap: 6px; font-size: 16px; color: var(--text-2); }
+.dur-part input { width: 76px; text-align: center; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 8px 6px; }
+.dur-part input, .block-row input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.dur-part input::-webkit-inner-spin-button, .dur-part input::-webkit-outer-spin-button,
+.block-row input::-webkit-inner-spin-button, .block-row input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.step { width: 44px; height: 44px; padding: 0; font-size: 22px; display: inline-grid; place-items: center; }
+.blocks-head { font-size: 13px; color: var(--text-2); margin-top: 6px; }
+.block-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 62px 14px 62px 14px auto; gap: 6px; align-items: center; padding: 4px 0; font-size: 13px; color: var(--text-2); }
+.block-row input[type=number] { text-align: center; padding: 8px 4px; }
+.block-row button { padding: 6px 9px; }
 
 .edit-row { display: grid; gap: 8px; align-items: center; padding: 6px 0; }
 .edit-row.bill { grid-template-columns: minmax(0, 1fr) 100px 80px auto; }
@@ -252,8 +273,7 @@ dialog form, .dialog-body { padding: 20px; display: flex; flex-direction: column
   .entry .dur { grid-column: 2; grid-row: 1; text-align: right; }
   .entry .amt { grid-column: 2; grid-row: 2; }
   .entry .acts { grid-column: 1; grid-row: 2; }
-  .seg-row { grid-template-columns: minmax(0, 1fr) auto; }
-  .seg-row .field:nth-child(2) { grid-column: 1; }
-  .seg-row button { grid-row: 1 / span 2; grid-column: 2; }
+  .block-row { grid-template-columns: minmax(0, 1fr) 52px 12px 52px 12px auto; }
+  .block-row .bl { display: none; }
   .edit-row.bill { grid-template-columns: minmax(0, 1fr) 80px 70px auto; }
 }

@@ -46,6 +46,12 @@
     </div>
   </section>
 
+  <!-- Today -->
+  <section class="card today" id="today-card">
+    <div class="today-head"><h3>Today</h3><span class="today-total" id="today-total"></span></div>
+    <div id="today-body"></div>
+  </section>
+
   <!-- Month nav -->
   <nav class="month-nav" aria-label="Month">
     <button class="ghost icon" id="m-prev" aria-label="Previous month">‹</button>
@@ -96,8 +102,20 @@
       <label class="field"><span>Project</span><input id="e-project" type="text" list="project-list" autocomplete="off"></label>
       <label class="field rate"><span>Rate (USD/hr)</span><input id="e-rate" type="number" inputmode="decimal" min="0" step="0.01" required></label>
     </div>
-    <div class="field"><span>Time worked</span></div>
-    <div id="e-segments"></div>
+    <div class="row2">
+      <label class="field"><span>Date</span><select id="e-date"></select></label>
+      <label class="field" id="e-start-wrap"><span>Start time</span><input id="e-start" type="time" step="60"></label>
+    </div>
+    <div class="field">
+      <span id="e-dur-label">Duration</span>
+      <div class="dur-edit">
+        <button type="button" class="step" data-step="-1" aria-label="One minute less">−</button>
+        <label class="dur-part"><input id="e-h" type="number" inputmode="numeric" min="0" step="1" aria-label="Hours"><span>h</span></label>
+        <label class="dur-part"><input id="e-m" type="number" inputmode="numeric" min="0" step="1" aria-label="Minutes"><span>m</span></label>
+        <button type="button" class="step" data-step="1" aria-label="One minute more">+</button>
+      </div>
+    </div>
+    <div id="e-blocks"></div>
     <button type="button" class="ghost small-btn" id="e-add-seg">+ Add another time block</button>
     <div class="muted small" id="e-summary"></div>
     <div class="error" id="e-error" role="alert"></div>
