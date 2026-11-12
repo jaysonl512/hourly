@@ -160,8 +160,10 @@ input:focus { border-color: var(--accent); outline: none; }
 .stat.good .k, .stat.good .v { color: var(--success-text); }
 
 /* Bars */
-.bar { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
-.bar > div { height: 100%; width: 0; background: var(--accent); border-radius: inherit; transition: width .5s ease; }
+.bar { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; display: flex; }
+.bar > div { height: 100%; width: 0; flex: none; background: var(--accent); border-radius: inherit; transition: width .5s ease; }
+.bar > div.today { background: var(--success); border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.bar.has-today > div:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .bar.big { height: 16px; border-radius: 8px; }
 .bar.done > div { background: var(--success); }
 .bar-caption { margin-top: 6px; }
@@ -181,13 +183,13 @@ input:focus { border-color: var(--accent); outline: none; }
 .bill-amt { text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bill-row.is-done .bn { color: var(--text-2); }
 .covered-label { color: var(--success-text); font-weight: 600; }
-.today-tag { display: block; font-size: 12px; color: var(--accent-text); }
+.today-tag { display: block; font-size: 12px; color: var(--success-text); }
 
 /* Today */
 .today-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .today-total { font-weight: 600; font-variant-numeric: tabular-nums; }
 .today-item { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 14px; }
-.today-amt { font-weight: 600; color: var(--accent-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.today-amt { font-weight: 600; color: var(--success-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .today-item.finished .today-amt { color: var(--success-text); }
 .next-up { margin: 8px 0 0; }
 .today p { margin: 0; }

@@ -344,8 +344,13 @@ function renderBills() {
 
   const pct = total > 0 ? Math.min(100, (net / total) * 100) : 0;
   const big = $('big-bar');
-  big.firstElementChild.style.width = pct + '%';
-  big.classList.toggle('done', total > 0 && net >= total);
+  const bigDone = total > 0 && net >= total;
+  const todayToBills = isCurrent && !bigDone ? Object.values(today.perBill).reduce((a, t) => a + t.usd, 0) : 0;
+  const pctToday = total > 0 ? (todayToBills / total) * 100 : 0;
+  big.children[0].style.width = Math.max(0, pct - pctToday) + '%';
+  big.children[1].style.width = pctToday + '%';
+  big.classList.toggle('has-today', pctToday > 0);
+  big.classList.toggle('done', bigDone);
   big.hidden = total === 0;
   $('big-caption').textContent = total > 0
     ? `${money(Math.min(net, total))} of ${money(total)} in bills (${Math.floor(pct)}%)${extra > 0 ? ` · ${money(extra)} extra` : ''}`
@@ -368,7 +373,10 @@ function renderBills() {
       .sort((x, y) => (x.done - y.done) || (x.b.usd - y.b.usd));
     const covered = rows.filter((r) => r.done).length;
     $('bill-list').innerHTML = rows.map(({ b, put, done }) => {
-      const w = b.usd > 0 ? (put / b.usd) * 100 : 100;
+      // In-progress bills: blue = covered before today, green = added today.
+      const tUsd = !done && isCurrent && today.perBill[b.id] ? today.perBill[b.id].usd : 0;
+      const wToday = b.usd > 0 ? (tUsd / b.usd) * 100 : 0;
+      const wBefore = done ? 100 : b.usd > 0 ? (Math.max(0, put - tUsd) / b.usd) * 100 : 100;
       const have = toBillCurrency(put, b);
       const sub = done
         ? `${esc(fmtBill(b.amount, b.currency))} · paid off`
@@ -378,7 +386,7 @@ function renderBills() {
       const usdTip = b.currency === 'CAD' ? ` title="≈ ${money(b.usd)} USD"` : '';
       return `<div class="bill-row ${done ? 'is-done' : ''}"${usdTip}>
         <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}</div><div class="bill-sub">${sub}</div></div>
-        <div class="bar ${done ? 'done' : ''}"><div style="width:${w}%"></div></div>
+        <div class="bar ${done ? 'done' : ''} ${wToday > 0 ? 'has-today' : ''}"><div style="width:${wBefore}%"></div><div class="today" style="width:${wToday}%"></div></div>
         <div class="bill-amt">${right}${t ? `<span class="today-tag">+${esc(fmtBill(toBillCurrency(t.usd, b), b.currency))} today</span>` : ''}</div>
       </div>`;
     }).join('');
