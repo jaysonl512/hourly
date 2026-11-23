@@ -14,6 +14,9 @@
 const STORAGE_KEY = 'hourly-tracker:v1';
 const DEFAULT_CAD_USD = 0.72;
 const HOUR = 3600e3;
+const MINUTE = 60e3;
+/** Pay is on whole minutes only: leftover seconds are shown but not paid. */
+const billableMs = (ms) => Math.floor(Math.max(0, ms) / MINUTE) * MINUTE;
 
 // ---------- State ----------
 
@@ -94,8 +97,8 @@ function fmtClock(ms) {
   return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map((v) => String(v).padStart(2, '0')).join(':');
 }
 function fmtHours(ms) {
-  const m = Math.round(ms / 60000);
-  return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
+  const m = Math.floor(ms / 60000);
+  return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm';
 }
 function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -119,7 +122,8 @@ const segMs = (seg, now = Date.now()) => (seg.end ?? now) - seg.start;
 const entryMs = (e) => e.segments.reduce((a, s) => a + segMs(s), 0);
 const entryStart = (e) => Math.min(...e.segments.map((s) => s.start));
 const entryEnd = (e) => Math.max(...e.segments.map((s) => s.end));
-const entryGross = (e) => (entryMs(e) / HOUR) * e.rate;
+const entryBillableMs = (e) => billableMs(entryMs(e));
+const entryGross = (e) => (entryBillableMs(e) / HOUR) * e.rate;
 
 function projectById(id) { return S.projects.find((p) => p.id === id); }
 function projectByName(name) {
@@ -222,7 +226,7 @@ function renderTick() {
   card.classList.toggle('running', running);
   card.classList.toggle('paused', !!S.timer && !running);
   $('clock').textContent = fmtClock(ms);
-  $('t-earn').textContent = money((ms / HOUR) * (S.timer ? S.timer.rate : currentRate()));
+  $('t-earn').textContent = money((billableMs(ms) / HOUR) * (S.timer ? S.timer.rate : currentRate()));
   const n = S.timer ? S.timer.segments.length : 0;
   $('t-state').textContent = !S.timer ? 'Ready' : running ? 'Running' : `Paused${n > 1 ? ` · ${n} blocks` : ''}`;
   document.title = S.timer ? `${running ? '▶' : '❚❚'} ${fmtClock(ms)} · Hourly` : 'Hourly';
@@ -244,7 +248,7 @@ function monthGross(key, beforeTs = Infinity) {
   }
   if (S.timer) {
     const st = S.timer.segments[0].start;
-    if (monthKey(st) === key && st < beforeTs) { const t = timerMs(); ms += t; g += (t / HOUR) * S.timer.rate; }
+    if (monthKey(st) === key && st < beforeTs) { const t = timerMs(); ms += t; g += (billableMs(t) / HOUR) * S.timer.rate; }
   }
   return { gross: g, ms, outside: S.outside[key] || 0 };
 }
@@ -438,7 +442,7 @@ function entryRow(e) {
   ].filter(Boolean).join(' · ');
   return `<div class="entry" data-id="${e.id}">
     <div><div class="t1">${esc(e.desc || entryProjectName(e))}</div><div class="t2">${meta}</div></div>
-    <div class="dur">${fmtClock(entryMs(e))}</div>
+    <div class="dur">${fmtClock(entryMs(e))}${entryMs(e) % MINUTE >= 1000 ? `<span class="billed">${fmtHours(entryBillableMs(e))} billed</span>` : ''}</div>
     <div class="amt">${money(entryGross(e))}</div>
     <div class="acts">
       <button class="ghost" data-act="edit" aria-label="Edit entry">Edit</button>
@@ -523,7 +527,7 @@ function renderAll() {
 
 let editing = null; // {id|null, blocks: [{start, ms}]}
 
-const MIN = 60e3;
+const MIN = MINUTE;
 const pad2 = (n) => String(n).padStart(2, '0');
 const timeOfDay = (ts) => { const d = new Date(ts); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
 const totalBlockMs = () => editing.blocks.reduce((a, b) => a + b.ms, 0);
@@ -625,7 +629,7 @@ function updateEntrySummary() {
   const last = blocks[blocks.length - 1];
   const ok = blocks.every((b) => Number.isFinite(b.start) && b.ms > 0);
   $('e-summary').textContent = ok
-    ? `${fmtTime(blocks[0].start)} – ${fmtTime(last.start + last.ms)} · ${fmtClock(ms)} · ${money((ms / HOUR) * rate)}`
+    ? `${fmtTime(blocks[0].start)} – ${fmtTime(last.start + last.ms)} · ${fmtClock(ms)}${ms % MINUTE ? ` (${fmtHours(billableMs(ms))} billed)` : ''} · ${money((billableMs(ms) / HOUR) * rate)}`
     : '';
 }
 
@@ -831,11 +835,11 @@ function exportJson() {
 
 function exportCsv() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const rows = [['Date', 'Start', 'End', 'Project', 'Description', 'Hours', 'Rate (USD)', 'Earned (USD)', 'Time blocks']];
+  const rows = [['Date', 'Start', 'End', 'Project', 'Description', 'Hours worked', 'Hours billed', 'Rate (USD)', 'Earned (USD)', 'Time blocks']];
   [...S.entries].sort((a, b) => entryStart(a) - entryStart(b)).forEach((e) => {
     rows.push([
       localDateStr(entryStart(e)), toLocalInput(entryStart(e)).replace('T', ' '), toLocalInput(entryEnd(e)).replace('T', ' '),
-      entryProjectName(e), e.desc, (entryMs(e) / HOUR).toFixed(4), e.rate.toFixed(2), entryGross(e).toFixed(2), e.segments.length,
+      entryProjectName(e), e.desc, (entryMs(e) / HOUR).toFixed(4), (entryBillableMs(e) / HOUR).toFixed(4), e.rate.toFixed(2), entryGross(e).toFixed(2), e.segments.length,
     ]);
   });
   download(`hourly-time-${localDateStr()}.csv`, rows.map((r) => r.map(q).join(',')).join('\n'), 'text/csv');
