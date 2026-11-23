@@ -399,6 +399,69 @@ function renderBills() {
     : '';
 }
 
+// ---------- History (collapsible days and weeks) ----------
+//
+// This week: one collapsible group per day (today open by default).
+// Earlier weeks: one collapsible group per week, with collapsible days inside.
+// Open/closed choices are remembered per browser under UI_KEY.
+
+const UI_KEY = 'hourly-tracker:ui';
+let uiOpen = {};
+try { uiOpen = JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch (e) { uiOpen = {}; }
+
+/** Monday 00:00 of the week containing `ts`. */
+function weekStart(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getTime();
+}
+function weekLabel(startTs) {
+  const end = new Date(startTs);
+  end.setDate(end.getDate() + 6);
+  const s = new Date(startTs);
+  const sameMonth = s.getMonth() === end.getMonth();
+  const a = s.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const b = end.toLocaleDateString(undefined, sameMonth ? { day: 'numeric' } : { month: 'short', day: 'numeric' });
+  return `Week of ${a} – ${b}`;
+}
+const isOpen = (key, dflt) => (key in uiOpen ? uiOpen[key] : dflt);
+const totals = (items) => `${fmtHours(items.reduce((a, e) => a + entryMs(e), 0))} · ${money(items.reduce((a, e) => a + entryGross(e), 0))}`;
+
+function entryRow(e) {
+  const blocks = e.segments.length;
+  const meta = [
+    e.desc ? esc(entryProjectName(e)) : '',
+    `${fmtTime(entryStart(e))} – ${fmtTime(entryEnd(e))}`,
+    `${money(e.rate)}/hr`,
+    blocks > 1 ? `paused ${blocks - 1}×` : '',
+  ].filter(Boolean).join(' · ');
+  return `<div class="entry" data-id="${e.id}">
+    <div><div class="t1">${esc(e.desc || entryProjectName(e))}</div><div class="t2">${meta}</div></div>
+    <div class="dur">${fmtClock(entryMs(e))}</div>
+    <div class="amt">${money(entryGross(e))}</div>
+    <div class="acts">
+      <button class="ghost" data-act="edit" aria-label="Edit entry">Edit</button>
+      <button class="ghost danger-text" data-act="del" aria-label="Delete entry">Delete</button>
+    </div>
+  </div>`;
+}
+
+function groupBy(list, keyFn) {
+  const m = new Map();
+  for (const e of list) { const k = keyFn(e); if (!m.has(k)) m.set(k, []); m.get(k).push(e); }
+  return m;
+}
+
+function dayGroup(dayKey, items) {
+  const key = 'd:' + dayKey;
+  const open = isOpen(key, dayKey === localDateStr());
+  return `<details class="day-group" data-key="${key}" ${open ? 'open' : ''}>
+    <summary class="day-head"><span class="chev" aria-hidden="true"></span><span class="lbl">${esc(dayLabel(entryStart(items[0])))}</span><span class="tot">${totals(items)}</span></summary>
+    ${items.map(entryRow).join('')}
+  </details>`;
+}
+
 function renderHistory() {
   const list = S.entries.filter((e) => monthKey(entryStart(e)) === viewMonth).sort((a, b) => entryStart(b) - entryStart(a));
   const outside = S.outside[viewMonth] || 0;
@@ -407,33 +470,19 @@ function renderHistory() {
   if (!list.length && !outside) {
     html = `<div class="empty">No time logged in ${esc(monthLabel(viewMonth))}.</div>`;
   } else {
-    const days = new Map();
-    for (const e of list) {
-      const k = localDateStr(entryStart(e));
-      if (!days.has(k)) days.set(k, []);
-      days.get(k).push(e);
-    }
-    for (const [, items] of days) {
-      const dms = items.reduce((a, e) => a + entryMs(e), 0);
-      const dg = items.reduce((a, e) => a + entryGross(e), 0);
-      html += `<div class="day-head"><span>${esc(dayLabel(entryStart(items[0])))}</span><span>${fmtHours(dms)} · ${money(dg)}</span></div>`;
-      for (const e of items) {
-        const blocks = e.segments.length;
-        const meta = [
-          e.desc ? esc(entryProjectName(e)) : '',
-          `${fmtTime(entryStart(e))} – ${fmtTime(entryEnd(e))}`,
-          `${money(e.rate)}/hr`,
-          blocks > 1 ? `paused ${blocks - 1}×` : '',
-        ].filter(Boolean).join(' · ');
-        html += `<div class="entry" data-id="${e.id}">
-          <div><div class="t1">${esc(e.desc || entryProjectName(e))}</div><div class="t2">${meta}</div></div>
-          <div class="dur">${fmtClock(entryMs(e))}</div>
-          <div class="amt">${money(entryGross(e))}</div>
-          <div class="acts">
-            <button class="ghost" data-act="edit" aria-label="Edit entry">Edit</button>
-            <button class="ghost danger-text" data-act="del" aria-label="Delete entry">Delete</button>
-          </div>
-        </div>`;
+    const thisWeek = weekStart(Date.now());
+    const weeks = groupBy(list, (e) => weekStart(entryStart(e)));
+    for (const [ws, weekItems] of weeks) {
+      const days = groupBy(weekItems, (e) => localDateStr(entryStart(e)));
+      const daysHtml = [...days].map(([k, items]) => dayGroup(k, items)).join('');
+      if (ws === thisWeek) {
+        html += `<div class="week-label"><span>This week</span><span>${totals(weekItems)}</span></div>${daysHtml}`;
+      } else {
+        const key = 'w:' + localDateStr(ws);
+        html += `<details class="week-group" data-key="${key}" ${isOpen(key, false) ? 'open' : ''}>
+          <summary class="week-head"><span class="chev" aria-hidden="true"></span><span class="lbl">${esc(weekLabel(ws))}</span><span class="tot">${totals(weekItems)}</span></summary>
+          <div class="week-days">${daysHtml}</div>
+        </details>`;
       }
     }
     if (outside) {
@@ -441,6 +490,16 @@ function renderHistory() {
     }
   }
   $('history').innerHTML = html;
+  $('history').querySelectorAll('details[data-key]').forEach((d) => {
+    let shown = d.open;
+    d.addEventListener('toggle', () => {
+      // Browsers fire "toggle" for groups rendered open; only save real changes.
+      if (d.open === shown) return;
+      shown = d.open;
+      uiOpen[d.dataset.key] = d.open;
+      try { localStorage.setItem(UI_KEY, JSON.stringify(uiOpen)); } catch (e) { /* not critical */ }
+    });
+  });
   const eo = $('hist-edit-outside');
   if (eo) eo.onclick = openOutside;
 }
