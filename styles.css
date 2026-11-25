@@ -292,7 +292,12 @@ dialog form, .dialog-body { padding: 20px; display: flex; flex-direction: column
 .sec-head { display: flex; align-items: center; gap: 10px; padding-bottom: 6px; }
 .sec-head h3 { font-size: 15px; flex: 1; }
 .sec-total { font-size: 13px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.sec-head .small-btn { padding: 3px 10px; }
+.add-btn {
+  display: block; width: 100%; margin-top: 8px; padding: 9px 12px;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius); background: transparent;
+  color: var(--accent-text); font-size: 14px; font-weight: 600; text-align: center;
+}
+.add-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
 .sec-empty { border-top: 1px solid var(--border); padding-top: 10px; margin: 0; }
 .tap { cursor: pointer; border-radius: 6px; transition: background .12s; }
 .tap:hover { background: var(--surface-2); }

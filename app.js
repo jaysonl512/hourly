@@ -481,27 +481,29 @@ function renderBills() {
       <div class="bill-amt">${right}${t ? `<span class="today-tag">+${money(t.usd)} today</span>` : ''}</div>
     </div>`;
   };
-  const section = (title, totalLabel, addKind, items, emptyText) => `
+  const section = (title, totalLabel, addKind, addLabel, items, emptyText) => `
     <div class="cost-group">
-      <div class="sec-head"><h3>${title}</h3><span class="sec-total">${totalLabel}</span><button type="button" class="small-btn" data-add="${addKind}">+ Add</button></div>
+      <div class="sec-head"><h3>${title}</h3><span class="sec-total">${totalLabel}</span></div>
       ${items.length ? items.join('') : `<p class="muted small sec-empty">${emptyText}</p>`}
+      <button type="button" class="add-btn" data-add="${addKind}">+ ${addLabel}</button>
     </div>`;
 
   const recurring = rows.filter((r) => r.b.kind !== 'oneoff');
   const extras = rows.filter((r) => r.b.kind === 'oneoff');
   const sumUsd = (list) => list.reduce((a, r) => a + r.b.usd, 0);
   const incomeItems = S.income.filter((i) => i.amount > 0 && (i.recurring || i.month === viewMonth));
-  let html = section('Monthly bills', recurring.length ? `${money(sumUsd(recurring))}/mo` : '', 'bill',
-    recurring.map(rowHtml), 'Add rent, phone, insurance and anything else you pay every month.');
-  html += section('Extra expenses', extras.length ? money(sumUsd(extras)) : '', 'oneoff',
-    extras.map(rowHtml), `Nothing extra planned for ${esc(monthName)}. Add one-time costs like a repair or a gift.`);
+  let html = section('Monthly bills', recurring.length ? `${money(sumUsd(recurring))}/mo` : '', 'bill', 'Add monthly bill',
+    recurring.map(rowHtml), 'Rent, phone, insurance and anything else you pay every month.');
+  html += section(`One-off expenses`, extras.length ? money(sumUsd(extras)) : '', 'oneoff', 'Add one-off expense',
+    extras.map(rowHtml), `Nothing planned for ${esc(monthName)} yet. Add one-time costs like a repair or a gift.`);
   if (incomeItems.length) {
     html += `<div class="cost-group">
-      <div class="sec-head"><h3>Other income</h3><span class="sec-total">${money(income)}</span><button type="button" class="small-btn" data-add="income">+ Add</button></div>
+      <div class="sec-head"><h3>Other income</h3><span class="sec-total">${money(income)}</span></div>
       ${incomeItems.map((i) => `<div class="income-row tap" role="button" tabindex="0" data-kind="income" data-id="${i.id}" aria-label="Edit ${esc(i.name || 'income')}">
         <span>${esc(i.name || 'Income')}<span class="due">${i.recurring ? 'every month' : 'this month only'}</span></span>
         <span class="income-amt">+${money(billUsd(i))}${cadNote(billUsd(i), i)}</span>
       </div>`).join('')}
+      <button type="button" class="add-btn" data-add="income">+ Add other income</button>
     </div>`;
   }
   $('cost-sections').innerHTML = html;
@@ -927,7 +929,7 @@ function openItem(kind, id) {
   const label = monthLabel(month);
   const titles = {
     bill: ['Add monthly bill', 'Edit monthly bill'],
-    oneoff: [`Add extra expense for ${label}`, 'Edit extra expense'],
+    oneoff: [`Add one-off expense for ${label}`, 'Edit one-off expense'],
     income: ['Add other income', 'Edit other income'],
   };
   const placeholders = { bill: 'Rent', oneoff: 'Car repair', income: 'Side gig' };
