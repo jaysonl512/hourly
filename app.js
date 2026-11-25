@@ -27,6 +27,7 @@ function blankState() {
     bills: [],             // {id, name, amount, currency: 'CAD'|'USD'}
     entries: [],           // {id, projectId, projectName, rate, desc, segments: [{start, end}]}
     outside: {},           // {'2026-11': 1234.56} USD earned outside the app, per month
+    dailyGoals: {},        // {'2026-11-25': 212.4} each weekday's goal, as it stood that day
     timer: null,           // {projectName, rate, desc, segments: [{start, end|null}]}
     settings: { allocation: 'smallest', taxEnabled: false, taxRate: 25 },
     fx: { rate: DEFAULT_CAD_USD, date: null, fetchedOn: null },
@@ -73,7 +74,6 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const cad = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'CAD' });
 const money = (n) => usd.format(Math.round(n * 100) / 100 || 0);
-const fmtBill = (amount, currency) => (currency === 'CAD' ? cad.format(amount) : 'US' + usd.format(amount));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function monthKey(ts) {
@@ -255,7 +255,6 @@ function monthGross(key, beforeTs = Infinity) {
 
 function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
 const sortedBills = () => S.bills.map((b) => ({ ...b, usd: billUsd(b) })).sort((a, b) => a.usd - b.usd);
-const toBillCurrency = (usdAmt, b) => (b.currency === 'CAD' ? usdAmt / S.fx.rate : usdAmt);
 const isDone = (put, b) => b.usd <= 0 || put >= b.usd - 0.005;
 
 /** USD put toward each bill (keyed by id) out of `net` dollars. `bills` must be sorted smallest first. */
@@ -296,25 +295,94 @@ function todayBreakdown(bills) {
   };
 }
 
-function renderToday(bills, today) {
-  $('today-total').textContent = today.ms > 0 ? `${money(today.gross)} · ${fmtHours(today.ms)}` : '';
-  if (today.ms <= 0) {
-    $('today-body').innerHTML = `<p class="muted small">Nothing logged yet today. Start the timer to chip away at your bills.</p>`;
-    return;
+// ---------- Daily goal ----------
+//
+// Weekdays (Mon–Fri) get a goal; weekends don't (anything earned is extra).
+// Goal = bills still uncovered at the start of today ÷ weekdays left in the
+// month, including today. Today's own earnings don't move today's goal, so it
+// stays put while you work; beating it lowers tomorrow's, falling short raises it.
+
+const isWorkday = (ts) => { const d = new Date(ts).getDay(); return d >= 1 && d <= 5; };
+
+/** Weekdays from the day of `ts` through the end of its month, including that day. */
+function workdaysLeftInMonth(ts) {
+  const d = new Date(ts);
+  d.setHours(12, 0, 0, 0);
+  const m = d.getMonth();
+  let n = 0;
+  while (d.getMonth() === m) { if (isWorkday(d.getTime())) n++; d.setDate(d.getDate() + 1); }
+  return n;
+}
+
+/** Gross earnings needed to end up with `net` after the optional tax set-aside. */
+const grossFromNet = (net) => (S.settings.taxEnabled ? net / (1 - Math.min(90, Math.max(0, S.settings.taxRate || 0)) / 100) : net);
+
+function dailyGoal(bills) {
+  const now = Date.now();
+  const total = bills.reduce((a, b) => a + b.usd, 0);
+  const before = monthGross(monthKey(now), startOfToday());
+  const remaining = Math.max(0, total - toNet(before.gross + before.outside));
+  const workday = isWorkday(now);
+  const daysLeft = workdaysLeftInMonth(now);
+  const target = workday && daysLeft > 0 ? grossFromNet(remaining / daysLeft) : 0;
+  return { total, remaining, workday, daysLeft, target };
+}
+
+/** Save today's goal so history shows the goal you had that day. Only writes when it changes. */
+function recordGoal(goal) {
+  if (!goal.workday || goal.total <= 0) return;
+  const k = localDateStr();
+  const v = Math.round(goal.target * 100) / 100;
+  if (S.dailyGoals[k] !== v) { S.dailyGoals[k] = v; save(); }
+}
+
+/** Small grey CAD amount shown next to a USD figure for CAD bills. */
+const cadNote = (usdAmt, b, cls = 'cad-inline') => (b.currency === 'CAD' ? `<span class="${cls}">${esc(cad.format(usdAmt / S.fx.rate))}</span>` : '');
+
+function renderToday(bills, today, goal) {
+  const earned = today.gross;
+  $('today-total').textContent = today.ms > 0 ? fmtHours(today.ms) : '';
+  const big = `<div class="goal-line"><span class="goal-big">${money(earned)}</span>`;
+  let head;
+  if (!bills.length) {
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Add your bills to get a daily goal.</p>`;
+  } else if (!goal.workday) {
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">It's the weekend, so there's no goal today. Everything you earn is extra.</p>`;
+  } else if (goal.target <= 0) {
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Your bills for this month are covered. Everything you earn today is extra.</p>`;
+  } else {
+    const extra = Math.max(0, earned - goal.target);
+    const scale = Math.max(earned, goal.target);
+    const blue = (Math.min(earned, goal.target) / scale) * 100;
+    const green = (extra / scale) * 100;
+    const status = extra > 0.004
+      ? `<span class="goal-hit">✓ Goal reached</span> · +${money(extra)} extra`
+      : earned >= goal.target - 0.004 ? '<span class="goal-hit">✓ Goal reached</span>' : `${money(goal.target - earned)} to go`;
+    const tax = S.settings.taxEnabled ? `, plus your ${S.settings.taxRate}% tax set-aside` : '';
+    head = `${big}<span class="muted">of ${money(goal.target)} goal</span></div>
+      <div class="bar big ${green > 0 ? 'has-today' : ''}"><div style="width:${blue}%"></div><div class="today" style="width:${green}%"></div></div>
+      <div class="goal-status small">${status}</div>
+      <p class="muted small goal-basis">${money(goal.remaining)} left in bills ÷ ${goal.daysLeft} weekday${goal.daysLeft === 1 ? '' : 's'} left this month${tax}</p>`;
   }
-  const items = bills.filter((b) => today.perBill[b.id]).map((b) => {
-    const t = today.perBill[b.id];
-    return `<div class="today-item ${t.finished ? 'finished' : ''}">
-      <span>${t.finished ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}${t.finished ? ' <span class="muted">paid off</span>' : ''}</span>
-      <span class="today-amt">+${esc(fmtBill(toBillCurrency(t.usd, b), b.currency))}</span>
-    </div>`;
-  });
-  if (today.extra > 0.004) items.push(`<div class="today-item finished"><span>Extra beyond bills</span><span class="today-amt">+${money(today.extra)}</span></div>`);
+
+  let items = [];
+  if (today.ms > 0) {
+    items = bills.filter((b) => today.perBill[b.id]).map((b) => {
+      const t = today.perBill[b.id];
+      return `<div class="today-item ${t.finished ? 'finished' : ''}">
+        <span>${t.finished ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}${t.finished ? ' <span class="muted">paid off</span>' : ''}</span>
+        <span class="today-amt">+${money(t.usd)}${cadNote(t.usd, b)}</span>
+      </div>`;
+    });
+    if (today.extra > 0.004) items.push(`<div class="today-item finished"><span>Extra beyond bills</span><span class="today-amt">+${money(today.extra)}</span></div>`);
+  }
   const next = bills.find((b) => !isDone(today.putAll[b.id], b));
-  const nextLine = next && S.settings.allocation === 'smallest'
-    ? `<p class="muted small next-up">Next to pay off: ${esc(next.name || 'Bill')} · ${esc(fmtBill(toBillCurrency(next.usd - today.putAll[next.id], next), next.currency))} to go</p>`
+  const nextLine = today.ms > 0 && next && S.settings.allocation === 'smallest'
+    ? `<p class="muted small next-up">Next to pay off: ${esc(next.name || 'Bill')} · ${money(next.usd - today.putAll[next.id])} to go</p>`
     : '';
-  $('today-body').innerHTML = (items.length ? items.join('') : `<p class="muted small">Add bills to see where today's money goes.</p>`) + nextLine;
+  $('today-body').innerHTML = head
+    + (items.length ? `<div class="today-sub-head">Where today's money went</div>${items.join('')}` : '')
+    + nextLine;
 }
 
 function renderBills() {
@@ -325,7 +393,9 @@ function renderBills() {
 
   const bills = sortedBills();
   const today = todayBreakdown(bills);
-  renderToday(bills, today);
+  const goal = dailyGoal(bills);
+  recordGoal(goal);
+  renderToday(bills, today, goal);
 
   const { gross, ms, outside } = monthGross(viewMonth);
   const totalGross = gross + outside;
@@ -381,17 +451,18 @@ function renderBills() {
       const tUsd = !done && isCurrent && today.perBill[b.id] ? today.perBill[b.id].usd : 0;
       const wToday = b.usd > 0 ? (tUsd / b.usd) * 100 : 0;
       const wBefore = done ? 100 : b.usd > 0 ? (Math.max(0, put - tUsd) / b.usd) * 100 : 100;
-      const have = toBillCurrency(put, b);
+      const cadTotal = b.currency === 'CAD' ? ` · ${esc(cad.format(b.amount))}` : '';
       const sub = done
-        ? `${esc(fmtBill(b.amount, b.currency))} · paid off`
-        : `${esc(fmtBill(have, b.currency))} of ${esc(fmtBill(b.amount, b.currency))}`;
+        ? `${money(b.usd)}${cadTotal} · paid off`
+        : `${money(put)} of ${money(b.usd)}${cadTotal}`;
       const t = isCurrent ? today.perBill[b.id] : null;
-      const right = done ? '<span class="covered-label">Covered</span>' : `${esc(fmtBill(b.amount - have, b.currency))} <span class="muted">to go</span>`;
-      const usdTip = b.currency === 'CAD' ? ` title="≈ ${money(b.usd)} USD"` : '';
-      return `<div class="bill-row ${done ? 'is-done' : ''}"${usdTip}>
+      const right = done
+        ? '<span class="covered-label">Covered</span>'
+        : `${money(b.usd - put)} <span class="muted">to go</span>${cadNote(b.usd - put, b, 'cad-sub')}`;
+      return `<div class="bill-row ${done ? 'is-done' : ''}">
         <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}</div><div class="bill-sub">${sub}</div></div>
         <div class="bar ${done ? 'done' : ''} ${wToday > 0 ? 'has-today' : ''}"><div style="width:${wBefore}%"></div><div class="today" style="width:${wToday}%"></div></div>
-        <div class="bill-amt">${right}${t ? `<span class="today-tag">+${esc(fmtBill(toBillCurrency(t.usd, b), b.currency))} today</span>` : ''}</div>
+        <div class="bill-amt">${right}${t ? `<span class="today-tag">+${money(t.usd)} today</span>` : ''}</div>
       </div>`;
     }).join('');
     $('covered').textContent = `${covered} of ${bills.length} bills covered`;
@@ -457,11 +528,20 @@ function groupBy(list, keyFn) {
   return m;
 }
 
+function goalBadge(dayKey, items) {
+  const goal = S.dailyGoals[dayKey];
+  if (!(goal > 0)) return '';
+  const earned = items.reduce((a, e) => a + entryGross(e), 0);
+  return earned >= goal - 0.004
+    ? `<span class="goal-badge hit" title="Goal that day: ${money(goal)}">✓ Goal</span>`
+    : `<span class="goal-badge" title="Goal that day">Goal ${money(goal)}</span>`;
+}
+
 function dayGroup(dayKey, items) {
   const key = 'd:' + dayKey;
   const open = isOpen(key, dayKey === localDateStr());
   return `<details class="day-group" data-key="${key}" ${open ? 'open' : ''}>
-    <summary class="day-head"><span class="chev" aria-hidden="true"></span><span class="lbl">${esc(dayLabel(entryStart(items[0])))}</span><span class="tot">${totals(items)}</span></summary>
+    <summary class="day-head"><span class="chev" aria-hidden="true"></span><span class="lbl">${esc(dayLabel(entryStart(items[0])))}</span>${goalBadge(dayKey, items)}<span class="tot">${totals(items)}</span></summary>
     ${items.map(entryRow).join('')}
   </details>`;
 }
