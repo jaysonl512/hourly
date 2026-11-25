@@ -399,20 +399,16 @@ function renderToday(bills, today, goal) {
     });
     if (today.extra > 0.004) items.push(`<div class="today-item finished"><span>Extra beyond costs</span><span class="today-amt">+${money(today.extra)}</span></div>`);
   }
-  const next = bills.find((b) => !isDone(today.putAll[b.id], b));
-  const nextLine = today.ms > 0 && next && S.settings.allocation === 'smallest'
-    ? `<p class="muted small next-up">Next to pay off: ${esc(next.name || 'Bill')} · ${money(next.usd - today.putAll[next.id])} to go</p>`
-    : '';
   $('today-body').innerHTML = head
-    + (items.length ? `<div class="today-sub-head">Where today's money went</div>${items.join('')}` : '')
-    + nextLine;
+    + (items.length ? `<div class="today-sub-head">Where today's money went</div>${items.join('')}` : '');
 }
 
 function renderBills() {
   const isCurrent = viewMonth === monthKey(Date.now());
   $('m-label').textContent = monthLabel(viewMonth);
-  $('m-next').disabled = viewMonth >= monthKey(Date.now());
-  $('m-next').style.visibility = viewMonth >= monthKey(Date.now()) ? 'hidden' : 'visible';
+  const lastMonth = shiftMonth(monthKey(Date.now()), 12);
+  $('m-next').disabled = viewMonth >= lastMonth;
+  $('m-next').style.visibility = viewMonth >= lastMonth ? 'hidden' : 'visible';
 
   // The Today card is always about this month; the list below follows the month you're viewing.
   const curItems = costItems();
@@ -435,7 +431,6 @@ function renderBills() {
     { k: 'Hours logged', v: fmtHours(ms) },
   ];
   if (tax) stats.push({ k: `After ${S.settings.taxRate}% set-aside`, v: money(toNet(totalGross)) });
-  if (income > 0) stats.push({ k: 'Other income', v: money(income) });
   if (total > 0) {
     stats.push(extra > 0
       ? { k: 'Extra beyond costs', v: '+' + money(extra), cls: 'good' }
@@ -453,52 +448,67 @@ function renderBills() {
   big.classList.toggle('has-today', pctToday > 0);
   big.classList.toggle('done', bigDone);
   big.hidden = total === 0;
-  $('big-caption').textContent = total > 0
-    ? `${money(Math.min(net, total))} of ${money(total)} in monthly costs (${Math.floor(pct)}%)${extra > 0 ? ` · ${money(extra)} extra` : ''}`
-    : '';
+  $('big-caption').textContent = '';
 
-  const alloc = S.settings.allocation;
-  $('alloc-smallest').classList.toggle('on', alloc === 'smallest');
-  $('alloc-prop').classList.toggle('on', alloc === 'proportional');
-  $('alloc-smallest').setAttribute('aria-pressed', alloc === 'smallest');
-  $('alloc-prop').setAttribute('aria-pressed', alloc === 'proportional');
-
-  if (!bills.length) {
-    $('covered').textContent = '';
-    $('bill-list').innerHTML = `<div class="empty">Add your monthly costs to see how close you are to covering them.<br><button class="primary" id="empty-add-bills">Add monthly costs</button></div>`;
-    $('empty-add-bills').onclick = openCosts;
-  } else {
-    const puts = allocate(net, bills);
-    // Unfinished bills first (smallest first), paid-off bills at the bottom.
-    const rows = bills.map((b) => ({ b, put: puts[b.id], done: isDone(puts[b.id], b) }))
-      .sort((x, y) => (x.done - y.done) || (x.b.usd - y.b.usd));
-    const covered = rows.filter((r) => r.done).length;
-    $('bill-list').innerHTML = rows.map(({ b, put, done }) => {
-      // In-progress bills: blue = covered before today, green = added today.
-      const tUsd = !done && isCurrent && today.perBill[b.id] ? today.perBill[b.id].usd : 0;
-      const wToday = b.usd > 0 ? (tUsd / b.usd) * 100 : 0;
-      const wBefore = done ? 100 : b.usd > 0 ? (Math.max(0, put - tUsd) / b.usd) * 100 : 100;
-      const cadTotal = b.currency === 'CAD' ? ` · ${esc(cad.format(b.amount))}` : '';
-      const sub = done
-        ? `${money(b.usd)}${cadTotal} · paid off`
-        : `${money(put)} of ${money(b.usd)}${cadTotal}`;
-      const t = isCurrent ? today.perBill[b.id] : null;
-      const right = done
-        ? '<span class="covered-label">Covered</span>'
-        : `${money(b.usd - put)} <span class="muted">to go</span>${cadNote(b.usd - put, b, 'cad-sub')}`;
-      const tag = b.kind === 'estimate' ? '<span class="kind-tag">Estimate</span>' : b.kind === 'oneoff' ? '<span class="kind-tag">One-off</span>' : '';
-      const due = b.kind === 'bill' && b.dueDay ? `<span class="due">due ${ordinal(b.dueDay)}</span>` : '';
-      return `<div class="bill-row ${done ? 'is-done' : ''}">
-        <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Cost')}${tag}${due}</div><div class="bill-sub">${sub}</div></div>
-        <div class="bar ${done ? 'done' : ''} ${wToday > 0 ? 'has-today' : ''}"><div style="width:${wBefore}%"></div><div class="today" style="width:${wToday}%"></div></div>
-        <div class="bill-amt">${right}${t ? `<span class="today-tag">+${money(t.usd)} today</span>` : ''}</div>
-      </div>`;
-    }).join('');
-    $('covered').textContent = `${covered} of ${bills.length} costs covered`;
+  const monthName = new Date(+viewMonth.slice(0, 4), +viewMonth.slice(5) - 1, 1).toLocaleDateString(undefined, { month: 'long' });
+  const puts = allocate(net, bills);
+  // Unfinished first (smallest first), paid off at the bottom.
+  const rows = bills.map((b) => ({ b, put: puts[b.id], done: isDone(puts[b.id], b) }))
+    .sort((x, y) => (x.done - y.done) || (x.b.usd - y.b.usd));
+  const paidOff = rows.filter((r) => r.done).length;
+  if (total > 0) {
+    $('big-caption').textContent = `${money(Math.min(net, total))} of ${money(total)} covered · ${paidOff} of ${rows.length} paid off`
+      + (income > 0 ? ` · includes ${money(income)} other income` : '')
+      + (extra > 0 ? ` · ${money(extra)} extra` : '');
   }
 
+  const rowHtml = ({ b, put, done }) => {
+    // Blue = covered before today, green = added today (this month only).
+    const tUsd = !done && isCurrent && today.perBill[b.id] ? today.perBill[b.id].usd : 0;
+    const wToday = b.usd > 0 ? (tUsd / b.usd) * 100 : 0;
+    const wBefore = done ? 100 : b.usd > 0 ? (Math.max(0, put - tUsd) / b.usd) * 100 : 100;
+    const sub = done ? `${money(b.usd)} · paid off` : `${money(put)} of ${money(b.usd)}`;
+    const t = isCurrent ? today.perBill[b.id] : null;
+    const right = done
+      ? '<span class="covered-label">Covered</span>'
+      : `${money(b.usd - put)} <span class="muted">to go</span>${cadNote(b.usd - put, b, 'cad-sub')}`;
+    const tag = b.kind === 'estimate' ? '<span class="kind-tag">Estimate</span>' : '';
+    const due = b.kind === 'bill' && b.dueDay ? `<span class="due">due ${ordinal(b.dueDay)}</span>` : '';
+    const kind = b.kind === 'oneoff' ? 'oneoff' : 'bill';
+    return `<div class="bill-row tap ${done ? 'is-done' : ''}" role="button" tabindex="0" data-kind="${kind}" data-id="${b.id}" aria-label="Edit ${esc(b.name || 'item')}">
+      <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Cost')}${tag}${due}</div><div class="bill-sub">${sub}</div></div>
+      <div class="bar ${done ? 'done' : ''} ${wToday > 0 ? 'has-today' : ''}"><div style="width:${wBefore}%"></div><div class="today" style="width:${wToday}%"></div></div>
+      <div class="bill-amt">${right}${t ? `<span class="today-tag">+${money(t.usd)} today</span>` : ''}</div>
+    </div>`;
+  };
+  const section = (title, totalLabel, addKind, items, emptyText) => `
+    <div class="cost-group">
+      <div class="sec-head"><h3>${title}</h3><span class="sec-total">${totalLabel}</span><button type="button" class="small-btn" data-add="${addKind}">+ Add</button></div>
+      ${items.length ? items.join('') : `<p class="muted small sec-empty">${emptyText}</p>`}
+    </div>`;
+
+  const recurring = rows.filter((r) => r.b.kind !== 'oneoff');
+  const extras = rows.filter((r) => r.b.kind === 'oneoff');
+  const sumUsd = (list) => list.reduce((a, r) => a + r.b.usd, 0);
+  const incomeItems = S.income.filter((i) => i.amount > 0 && (i.recurring || i.month === viewMonth));
+  let html = section('Monthly bills', recurring.length ? `${money(sumUsd(recurring))}/mo` : '', 'bill',
+    recurring.map(rowHtml), 'Add rent, phone, insurance and anything else you pay every month.');
+  html += section('Extra expenses', extras.length ? money(sumUsd(extras)) : '', 'oneoff',
+    extras.map(rowHtml), `Nothing extra planned for ${esc(monthName)}. Add one-time costs like a repair or a gift.`);
+  if (incomeItems.length) {
+    html += `<div class="cost-group">
+      <div class="sec-head"><h3>Other income</h3><span class="sec-total">${money(income)}</span><button type="button" class="small-btn" data-add="income">+ Add</button></div>
+      ${incomeItems.map((i) => `<div class="income-row tap" role="button" tabindex="0" data-kind="income" data-id="${i.id}" aria-label="Edit ${esc(i.name || 'income')}">
+        <span>${esc(i.name || 'Income')}<span class="due">${i.recurring ? 'every month' : 'this month only'}</span></span>
+        <span class="income-amt">+${money(billUsd(i))}${cadNote(billUsd(i), i)}</span>
+      </div>`).join('')}
+    </div>`;
+  }
+  $('cost-sections').innerHTML = html;
+  $('add-income').hidden = incomeItems.length > 0;
+
   const fx = S.fx;
-  $('fx-note').textContent = [...bills, ...S.income].some((b) => b.currency === 'CAD')
+  $('fx-note').textContent = [...bills, ...incomeItems].some((b) => b.currency === 'CAD')
     ? `1 CAD = ${fx.rate.toFixed(4)} USD${fx.date ? ` · ${fx.date}` : ' · default rate'}`
     : '';
 }
@@ -899,151 +909,86 @@ function toggleDayOff(k) {
   renderHistory();
 }
 
-// ---------- Monthly costs dialog ----------
+// ---------- Bill / expense / income form ----------
 //
-// Four sections: recurring bills, estimated spending (both stored in S.bills
-// with a `kind`), one-off costs for the month being viewed, and other income.
+// One small form for everything in the bills card:
+//   bill    -> S.bills   (kind 'bill', or 'estimate' when the amount varies)
+//   oneoff  -> S.oneOffs (extra expense for one month: the month being viewed)
+//   income  -> S.income  (every month, or one month only)
 
-let costMonth = null;
-
-const COST_SECTIONS = [
-  { kind: 'bill', title: 'Bills', add: '+ Add bill', placeholder: 'Rent', per: '/mo',
-    help: () => 'The same amount every month, like rent or your phone.' },
-  { kind: 'estimate', title: 'Estimated spending', add: '+ Add estimate', placeholder: 'Groceries', per: '/mo',
-    help: () => 'Costs that change month to month, like groceries or gas. Use your best monthly estimate.' },
-  { kind: 'oneoff', title: 'One-off costs', add: '+ Add one-off cost', placeholder: 'Car repair', per: '',
-    help: () => `Only count in ${monthLabel(costMonth)}.` },
-  { kind: 'income', title: 'Other income', add: '+ Add income', placeholder: 'Side gig', per: '',
-    help: () => "Money coming in besides your hourly work, after tax. It lowers what you need to earn." },
-];
+let editingItem = null; // {kind, id|null, month}
 
 function costStore(kind) { return kind === 'oneoff' ? S.oneOffs : kind === 'income' ? S.income : S.bills; }
-function sectionItems(kind) {
-  if (kind === 'oneoff') return S.oneOffs.filter((o) => o.month === costMonth);
-  if (kind === 'income') return S.income.filter((i) => i.recurring || i.month === costMonth);
-  return S.bills.filter((b) => (b.kind || 'bill') === kind);
-}
-const sectionUsd = (kind) => sectionItems(kind).reduce((a, i) => a + (i.amount > 0 ? billUsd(i) : 0), 0);
 
-function openCosts() {
-  costMonth = viewMonth;
-  renderCostsEditor();
-  $('costs-dialog').showModal();
+function openItem(kind, id) {
+  const it = id ? costStore(kind).find((x) => x.id === id) : null;
+  const month = it?.month || viewMonth;
+  editingItem = { kind, id: it?.id || null, month };
+  const label = monthLabel(month);
+  const titles = {
+    bill: ['Add monthly bill', 'Edit monthly bill'],
+    oneoff: [`Add extra expense for ${label}`, 'Edit extra expense'],
+    income: ['Add other income', 'Edit other income'],
+  };
+  const placeholders = { bill: 'Rent', oneoff: 'Car repair', income: 'Side gig' };
+  $('item-title').textContent = titles[kind][it ? 1 : 0];
+  $('i-name').value = it?.name || '';
+  $('i-name').placeholder = placeholders[kind];
+  $('i-amount').value = it?.amount || '';
+  $('i-currency').value = it?.currency || (kind === 'income' ? 'USD' : 'CAD');
+  $('i-bill-extra').hidden = kind !== 'bill';
+  $('i-category').value = it?.category || '';
+  $('i-due').value = it?.dueDay || '';
+  $('i-varies').checked = it?.kind === 'estimate';
+  $('i-when-wrap').hidden = kind !== 'income';
+  $('i-when-once').textContent = `Only in ${label}`;
+  $('i-when').value = it && !it.recurring ? '0' : '1';
+  $('i-note').textContent = kind === 'oneoff' ? `Only counts in ${label}.` : kind === 'income' ? 'After tax. It lowers what you need to earn.' : '';
+  $('i-delete').hidden = !it;
+  $('i-error').textContent = '';
+  $('item-dialog').showModal();
+  $('i-name').focus();
 }
 
-function costRow(kind, item, placeholder) {
-  const cur = (c) => `<option ${item.currency === c ? 'selected' : ''}>${c}</option>`;
-  let extra = '';
+function saveItem(ev) {
+  ev.preventDefault();
+  const name = $('i-name').value.trim();
+  const amount = parseFloat($('i-amount').value);
+  if (!name) { $('i-error').textContent = 'Enter a name.'; return; }
+  if (!Number.isFinite(amount) || amount <= 0) { $('i-error').textContent = 'Enter an amount above 0.'; return; }
+  const { kind, id, month } = editingItem;
+  const store = costStore(kind);
+  const data = { name, amount: Math.round(amount * 100) / 100, currency: $('i-currency').value };
   if (kind === 'bill') {
-    extra = `<input type="text" class="cf-cat" data-k="category" value="${esc(item.category || '')}" list="category-list" placeholder="Category" aria-label="Category">
-      <input type="number" class="cf-due" data-k="dueDay" value="${item.dueDay || ''}" min="1" max="31" step="1" inputmode="numeric" placeholder="Due day" aria-label="Due day of the month">`;
-  } else if (kind === 'income') {
-    extra = `<select class="cf-when" data-k="recurring" aria-label="How often">
-        <option value="1" ${item.recurring ? 'selected' : ''}>Every month</option>
-        <option value="0" ${item.recurring ? '' : 'selected'}>This month only</option>
-      </select>`;
+    const due = parseInt($('i-due').value, 10);
+    Object.assign(data, {
+      kind: $('i-varies').checked ? 'estimate' : 'bill',
+      category: $('i-category').value.trim(),
+      dueDay: due >= 1 && due <= 31 ? due : null,
+    });
+  } else if (kind === 'oneoff') {
+    data.month = month;
+  } else {
+    data.recurring = $('i-when').value === '1';
+    data.month = data.recurring ? undefined : month;
   }
-  return `<div class="cost-row" data-kind="${kind}" data-id="${item.id}">
-    <input type="text" class="cf-name" data-k="name" value="${esc(item.name)}" placeholder="${esc(placeholder)}" aria-label="Name">
-    <input type="number" class="cf-amt" data-k="amount" value="${item.amount || ''}" min="0" step="0.01" inputmode="decimal" placeholder="0.00" aria-label="Amount">
-    <select class="cf-cur" data-k="currency" aria-label="Currency">${cur('CAD')}${cur('USD')}</select>
-    ${extra}
-    <button type="button" class="ghost danger-text cf-del" data-del aria-label="Remove">✕</button>
-  </div>`;
-}
-
-/** ‹ Month › switcher for one-off costs (and one-time income), from 12 months back to 12 ahead. */
-function monthPicker() {
-  const now = monthKey(Date.now());
-  const prev = costMonth > shiftMonth(now, -12), next = costMonth < shiftMonth(now, 12);
-  return `<span class="month-pick">
-    <button type="button" class="ghost" data-cm="-1" aria-label="Previous month" ${prev ? '' : 'disabled'}>‹</button>
-    <span>${esc(new Date(+costMonth.slice(0, 4), +costMonth.slice(5) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))}</span>
-    <button type="button" class="ghost" data-cm="1" aria-label="Next month" ${next ? '' : 'disabled'}>›</button>
-  </span>`;
-}
-
-function renderCostsEditor() {
-  $('costs-edit').innerHTML = COST_SECTIONS.map((sec) => {
-    const items = sectionItems(sec.kind);
-    return `<section class="cost-sec" data-sec="${sec.kind}">
-      <div class="cost-sec-head"><h4>${sec.title}</h4>${sec.kind === 'oneoff' ? monthPicker() : ''}<span class="cost-sub" data-sub="${sec.kind}"></span></div>
-      <p class="muted small">${esc(sec.help())}</p>
-      ${items.map((i) => costRow(sec.kind, i, sec.placeholder)).join('')}
-      <button type="button" class="ghost small-btn" data-add="${sec.kind}">${sec.add}</button>
-    </section>`;
-  }).join('');
-  updateCostTotals();
-}
-
-function updateCostTotals() {
-  for (const sec of COST_SECTIONS) {
-    const el = $('costs-edit').querySelector(`[data-sub="${sec.kind}"]`);
-    const v = sectionUsd(sec.kind);
-    if (el) el.textContent = v > 0 ? money(v) + sec.per : '';
-  }
-  const costs = sectionUsd('bill') + sectionUsd('estimate') + sectionUsd('oneoff');
-  const income = sectionUsd('income');
-  $('costs-total').innerHTML = `${money(costs)} in costs${income > 0 ? ` − ${money(income)} other income` : ''}
-    = <strong>${money(Math.max(0, costs - income))}</strong> to cover in ${esc(monthLabel(costMonth))}`;
-}
-
-function findCost(row) {
-  return costStore(row.dataset.kind).find((x) => x.id === row.dataset.id);
-}
-
-function onCostsEdit(ev) {
-  const cm = ev.type === 'click' && ev.target.closest('[data-cm]');
-  if (cm) { costMonth = shiftMonth(costMonth, +cm.dataset.cm); renderCostsEditor(); return; }
-  const add = ev.type === 'click' && ev.target.closest('[data-add]');
-  if (add) {
-    const kind = add.dataset.add;
-    const item = { id: uid(), name: '', amount: 0, currency: kind === 'income' ? 'USD' : 'CAD' };
-    if (kind === 'bill' || kind === 'estimate') Object.assign(item, { kind, category: '', dueDay: null });
-    if (kind === 'oneoff') item.month = costMonth;
-    if (kind === 'income') item.recurring = true;
-    costStore(kind).push(item);
-    save();
-    renderCostsEditor();
-    $('costs-edit').querySelector(`.cost-row[data-id="${item.id}"] .cf-name`)?.focus();
-    return;
-  }
-  const row = ev.target.closest('.cost-row');
-  if (!row) return;
-  const item = findCost(row);
-  if (!item) return;
-  const store = costStore(row.dataset.kind);
-  if (ev.type === 'click' && ev.target.closest('[data-del]')) {
-    const i = store.indexOf(item);
-    store.splice(i, 1);
-    save(); renderCostsEditor(); renderBills();
-    toast(`${item.name || 'Item'} removed`, () => { store.splice(i, 0, item); save(); if ($('costs-dialog').open) renderCostsEditor(); renderBills(); });
-    return;
-  }
-  if (ev.type === 'click') return;
-  const k = ev.target.dataset.k;
-  if (!k) return;
-  const v = ev.target.value;
-  if (k === 'amount') { const n = parseFloat(v); item.amount = Number.isFinite(n) && n >= 0 ? n : 0; }
-  else if (k === 'dueDay') { const n = parseInt(v, 10); item.dueDay = n >= 1 && n <= 31 ? n : null; }
-  else if (k === 'recurring') {
-    item.recurring = v === '1';
-    if (item.recurring) delete item.month; else item.month = costMonth;
-  } else item[k] = v;
+  if (id) Object.assign(store.find((x) => x.id === id), data);
+  else store.push({ id: uid(), ...data });
   save();
-  updateCostTotals();
+  $('item-dialog').close();
   renderBills();
 }
 
-/** Drop rows left completely empty when the dialog closes. */
-function pruneEmptyCosts() {
-  const empty = (x) => !String(x.name || '').trim() && !(x.amount > 0);
-  const n = S.bills.length + S.oneOffs.length + S.income.length;
-  S.bills = S.bills.filter((x) => !empty(x));
-  S.oneOffs = S.oneOffs.filter((x) => !empty(x));
-  S.income = S.income.filter((x) => !empty(x));
-  if (S.bills.length + S.oneOffs.length + S.income.length !== n) save();
+function deleteItem() {
+  const { kind, id } = editingItem;
+  const store = costStore(kind);
+  const i = store.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  const [removed] = store.splice(i, 1);
+  save();
+  $('item-dialog').close();
   renderBills();
+  toast(`${removed.name} removed`, () => { store.splice(i, 0, removed); save(); renderBills(); });
 }
 
 // ---------- Outside earnings ----------
@@ -1067,6 +1012,7 @@ function saveOutside(ev) {
 
 function openSettings() {
   renderProjectsEditor();
+  $('s-alloc').value = S.settings.allocation;
   $('s-tax-on').checked = S.settings.taxEnabled;
   $('s-tax-rate').value = S.settings.taxRate;
   $('s-tax-rate').disabled = !S.settings.taxEnabled;
@@ -1210,11 +1156,18 @@ function wire() {
   });
 
   $('m-prev').onclick = () => { viewMonth = shiftMonth(viewMonth, -1); renderBills(); renderHistory(); };
-  $('m-next').onclick = () => { if (viewMonth < monthKey(Date.now())) { viewMonth = shiftMonth(viewMonth, 1); renderBills(); renderHistory(); } };
+  $('m-next').onclick = () => { if (viewMonth < shiftMonth(monthKey(Date.now()), 12)) { viewMonth = shiftMonth(viewMonth, 1); renderBills(); renderHistory(); } };
 
-  $('alloc-smallest').onclick = () => { S.settings.allocation = 'smallest'; save(); renderBills(); };
-  $('alloc-prop').onclick = () => { S.settings.allocation = 'proportional'; save(); renderBills(); };
-  $('open-costs').onclick = openCosts;
+  $('s-alloc').onchange = (e) => { S.settings.allocation = e.target.value; save(); renderBills(); };
+  $('add-income').onclick = () => openItem('income', null);
+  const onCostTap = (ev) => {
+    const add = ev.target.closest('[data-add]');
+    if (add) return openItem(add.dataset.add, null);
+    const row = ev.target.closest('.tap');
+    if (row) openItem(row.dataset.kind, row.dataset.id);
+  };
+  $('cost-sections').addEventListener('click', onCostTap);
+  $('cost-sections').addEventListener('keydown', (ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.classList.contains('tap')) { ev.preventDefault(); onCostTap(ev); } });
   $('open-extra').onclick = openOutside;
   $('open-settings').onclick = openSettings;
   $('add-manual').onclick = () => openEntry(null);
@@ -1250,9 +1203,10 @@ function wire() {
     if (p && !editing.id) { $('e-rate').value = p.rate; updateEntrySummary(); }
   });
 
-  // Monthly costs dialog
-  ['input', 'change', 'click'].forEach((t) => $('costs-edit').addEventListener(t, onCostsEdit));
-  $('costs-dialog').addEventListener('close', pruneEmptyCosts);
+  // Bill / expense / income form
+  $('item-form').addEventListener('submit', saveItem);
+  $('i-delete').onclick = deleteItem;
+  $('item-form').addEventListener('input', () => { $('i-error').textContent = ''; });
 
   // Outside earnings
   $('extra-form').addEventListener('submit', saveOutside);

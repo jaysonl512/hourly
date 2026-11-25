@@ -64,19 +64,12 @@
     <div class="stats" id="stats"></div>
     <div class="bar big" id="big-bar"><div></div><div class="today"></div></div>
     <div class="bar-caption muted small" id="big-caption"></div>
-    <div class="bills-head">
-      <span class="muted small" id="covered"></span>
-      <div class="seg" role="group" aria-label="How earnings fill bills">
-        <button id="alloc-smallest">Smallest first</button>
-        <button id="alloc-prop">Proportional</button>
-      </div>
-    </div>
-    <div id="bill-list"></div>
+    <div id="cost-sections"></div>
     <div class="card-foot">
       <span class="muted small" id="fx-note"></span>
-      <span class="foot-actions">
-        <button class="ghost small-btn" id="open-extra">Add outside earnings</button>
-        <button class="ghost small-btn" id="open-costs">Edit monthly costs</button>
+      <span class="foot-actions small">
+        <button type="button" class="link-btn" id="add-income">Add other income</button>
+        <button type="button" class="link-btn" id="open-extra">Add outside earnings</button>
       </span>
     </div>
   </section>
@@ -126,15 +119,32 @@
   </form>
 </dialog>
 
-<!-- Monthly costs dialog -->
-<dialog id="costs-dialog" class="wide">
-  <div class="dialog-body">
-    <h3>Monthly costs</h3>
-    <p class="muted small">Everything you need to cover each month. CAD amounts are converted to USD at today's rate.</p>
-    <div id="costs-edit"></div>
-    <div class="costs-total small" id="costs-total"></div>
-    <div class="dialog-actions"><button class="primary" data-close>Done</button></div>
-  </div>
+<!-- Bill / expense / income form -->
+<dialog id="item-dialog">
+  <form method="dialog" id="item-form">
+    <h3 id="item-title">Add bill</h3>
+    <label class="field"><span>Name</span><input id="i-name" type="text" autocomplete="off" required></label>
+    <div class="row2">
+      <label class="field"><span>Amount</span><input id="i-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" required></label>
+      <label class="field rate"><span>Currency</span><select id="i-currency"><option>CAD</option><option>USD</option></select></label>
+    </div>
+    <div id="i-bill-extra">
+      <div class="row2">
+        <label class="field"><span>Category (optional)</span><input id="i-category" type="text" list="category-list" autocomplete="off"></label>
+        <label class="field rate"><span>Due day (optional)</span><input id="i-due" type="number" inputmode="numeric" min="1" max="31" step="1" placeholder="1–31"></label>
+      </div>
+      <label class="check i-varies"><input type="checkbox" id="i-varies"> The amount changes month to month (an estimate, like groceries)</label>
+    </div>
+    <label class="field" id="i-when-wrap"><span>How often</span><select id="i-when"><option value="1">Every month</option><option value="0" id="i-when-once">This month only</option></select></label>
+    <p class="muted small" id="i-note"></p>
+    <div class="error" id="i-error" role="alert"></div>
+    <div class="dialog-actions">
+      <button type="button" class="ghost danger-text" id="i-delete">Delete</button>
+      <span class="spacer"></span>
+      <button type="button" class="ghost" data-close>Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
 </dialog>
 <datalist id="category-list">
   <option value="Housing"></option><option value="Utilities"></option><option value="Phone and internet"></option>
@@ -180,6 +190,11 @@
     <p class="muted small">Each project remembers the last rate you used for it.</p>
     <div id="projects-edit"></div>
     <button type="button" class="ghost small-btn" id="project-add">+ Add project</button>
+
+    <h4>Bill order</h4>
+    <label class="field"><span>How your earnings fill your bills</span>
+      <select id="s-alloc"><option value="smallest">Smallest first (pay off small bills quickly)</option><option value="proportional">Proportional (all bills fill evenly)</option></select>
+    </label>
 
     <h4>Tax set-aside</h4>
     <label class="check"><input type="checkbox" id="s-tax-on"> Take a percentage off before counting toward bills</label>
