@@ -292,6 +292,28 @@ dialog form, .dialog-body { padding: 20px; display: flex; flex-direction: column
 .block-row input[type=number] { text-align: center; padding: 8px 4px; }
 .block-row button { padding: 6px 9px; }
 
+dialog.wide { width: min(700px, calc(100vw - 32px)); }
+.cost-sec { padding: 4px 0 12px; border-bottom: 1px solid var(--border); }
+.cost-sec:last-child { border-bottom: none; }
+.cost-sec-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.cost-sec-head h4 { margin-top: 16px; }
+.month-pick { display: inline-flex; align-items: center; gap: 2px; font-size: 13px; font-weight: 600; margin-right: auto; margin-left: 8px; }
+.month-pick button { padding: 2px 8px; font-size: 16px; }
+.month-pick button:disabled { visibility: hidden; }
+.cost-sub { font-size: 13px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cost-sec p { margin: 2px 0 8px; }
+.cost-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 0; }
+.cost-row .cf-name { flex: 1 1 150px; }
+.cost-row .cf-amt { flex: 0 0 100px; }
+.cost-row .cf-cur { flex: 0 0 72px; padding: 8px 6px; }
+.cost-row .cf-cat { flex: 0 1 140px; }
+.cost-row .cf-due { flex: 0 0 88px; }
+.cost-row .cf-when { flex: 0 0 150px; }
+.cost-row .cf-del { flex: 0 0 auto; padding: 6px 9px; }
+.costs-total { margin-top: 12px; padding: 10px 12px; background: var(--surface-2); border-radius: var(--radius); }
+.kind-tag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 5px; background: var(--surface-2); color: var(--text-2); margin-left: 6px; vertical-align: 1px; }
+.due { font-size: 12px; color: var(--text-3); margin-left: 6px; }
+
 .edit-row { display: grid; gap: 8px; align-items: center; padding: 6px 0; }
 .edit-row.bill { grid-template-columns: minmax(0, 1fr) 100px 80px auto; }
 .edit-row.project { grid-template-columns: minmax(0, 1fr) 100px auto; }
@@ -327,4 +349,10 @@ dialog form, .dialog-body { padding: 20px; display: flex; flex-direction: column
   .block-row { grid-template-columns: minmax(0, 1fr) 52px 12px 52px 12px auto; }
   .block-row .bl { display: none; }
   .edit-row.bill { grid-template-columns: minmax(0, 1fr) 80px 70px auto; }
+  .cost-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px; padding: 8px 0; }
+  .cost-row + .cost-row { border-top: 1px dashed var(--border); }
+  .cost-row .cf-name { grid-column: 1 / 3; }
+  .cost-row .cf-del { grid-column: 3; grid-row: 1; }
+  .cost-row .cf-when { grid-column: 1 / 3; }
+  .cost-row > * { min-width: 0; }
 }

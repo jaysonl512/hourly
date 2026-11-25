@@ -24,7 +24,9 @@ function blankState() {
   return {
     version: 1,
     projects: [],          // {id, name, rate}
-    bills: [],             // {id, name, amount, currency: 'CAD'|'USD'}
+    bills: [],             // recurring costs {id, name, amount, currency, kind: 'bill'|'estimate', category, dueDay}
+    oneOffs: [],           // {id, name, amount, currency, month: '2026-11'} costs for one month only
+    income: [],            // {id, name, amount, currency, recurring, month} other income, after tax
     entries: [],           // {id, projectId, projectName, rate, desc, segments: [{start, end}]}
     outside: {},           // {'2026-11': 1234.56} USD earned outside the app, per month
     dailyGoals: {},        // {'2026-11-25': 212.4} each weekday's goal, as it stood that day
@@ -255,7 +257,19 @@ function monthGross(key, beforeTs = Infinity) {
 }
 
 function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
-const sortedBills = () => S.bills.map((b) => ({ ...b, usd: billUsd(b) })).sort((a, b) => a.usd - b.usd);
+/** Everything to cover in a month (recurring bills and estimates, plus that month's one-offs), in USD, smallest first. */
+function costItems(key = monthKey(Date.now())) {
+  return [
+    ...S.bills.map((b) => ({ ...b, kind: b.kind || 'bill' })),
+    ...S.oneOffs.filter((o) => o.month === key).map((o) => ({ ...o, kind: 'oneoff' })),
+  ]
+    .filter((b) => b.amount > 0)
+    .map((b) => ({ ...b, usd: billUsd(b) }))
+    .sort((a, b) => a.usd - b.usd);
+}
+/** Other income for a month in USD. Treated as already after tax. */
+const monthIncome = (key) => S.income.filter((i) => i.amount > 0 && (i.recurring || i.month === key)).reduce((a, i) => a + billUsd(i), 0);
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
 const isDone = (put, b) => b.usd <= 0 || put >= b.usd - 0.005;
 
 /** USD put toward each bill (keyed by id) out of `net` dollars. `bills` must be sorted smallest first. */
@@ -278,8 +292,9 @@ function todayBreakdown(bills) {
   const all = monthGross(cur);
   const before = monthGross(cur, startOfToday());
   const total = bills.reduce((a, b) => a + b.usd, 0);
-  const netAll = toNet(all.gross + all.outside);
-  const netBefore = toNet(before.gross + all.outside);
+  const income = monthIncome(cur);
+  const netAll = toNet(all.gross + all.outside) + income;
+  const netBefore = toNet(before.gross + all.outside) + income;
   const putAll = allocate(netAll, bills);
   const putBefore = allocate(netBefore, bills);
   const perBill = {};
@@ -299,7 +314,7 @@ function todayBreakdown(bills) {
 // ---------- Daily goal ----------
 //
 // Weekdays (Mon–Fri) get a goal; weekends don't (anything earned is extra).
-// Goal = bills still uncovered at the start of today ÷ weekdays left in the
+// Goal = monthly costs still uncovered at the start of today ÷ workdays left in the
 // month, including today. Today's own earnings don't move today's goal, so it
 // stays put while you work; beating it lowers tomorrow's, falling short raises it.
 
@@ -325,7 +340,7 @@ function dailyGoal(bills) {
   const now = Date.now();
   const total = bills.reduce((a, b) => a + b.usd, 0);
   const before = monthGross(monthKey(now), startOfToday());
-  const remaining = Math.max(0, total - toNet(before.gross + before.outside));
+  const remaining = Math.max(0, total - toNet(before.gross + before.outside) - monthIncome(monthKey(now)));
   const workday = isWorkday(now);
   const daysLeft = workdaysLeftInMonth(now);
   const target = workday && daysLeft > 0 ? grossFromNet(remaining / daysLeft) : 0;
@@ -351,13 +366,13 @@ function renderToday(bills, today, goal) {
   const big = `<div class="goal-line"><span class="goal-big">${money(earned)}</span>`;
   let head;
   if (!bills.length) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Add your bills to get a daily goal.</p>`;
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Add your monthly costs to get a daily goal.</p>`;
   } else if (goal.dayOff) {
     head = `${big}<span class="muted">earned today</span></div><p class="muted small">You've taken today off, so there's no goal. Anything you earn is extra. · ${offLink}</p>`;
   } else if (!goal.workday) {
     head = `${big}<span class="muted">earned today</span></div><p class="muted small">It's the weekend, so there's no goal today. Everything you earn is extra. · ${offLink}</p>`;
   } else if (goal.target <= 0) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Your bills for this month are covered. Everything you earn today is extra. · ${offLink}</p>`;
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Your costs for this month are covered. Everything you earn today is extra. · ${offLink}</p>`;
   } else {
     const extra = Math.max(0, earned - goal.target);
     const scale = Math.max(earned, goal.target);
@@ -370,7 +385,7 @@ function renderToday(bills, today, goal) {
     head = `${big}<span class="muted">of ${money(goal.target)} goal</span></div>
       <div class="bar big ${green > 0 ? 'has-today' : ''}"><div style="width:${blue}%"></div><div class="today" style="width:${green}%"></div></div>
       <div class="goal-status small">${status}</div>
-      <p class="muted small goal-basis">${money(goal.remaining)} left in bills ÷ ${goal.daysLeft} workday${goal.daysLeft === 1 ? '' : 's'} left this month${tax} · ${offLink}</p>`;
+      <p class="muted small goal-basis">${money(goal.remaining)} left to cover ÷ ${goal.daysLeft} workday${goal.daysLeft === 1 ? '' : 's'} left this month${tax} · ${offLink}</p>`;
   }
 
   let items = [];
@@ -382,7 +397,7 @@ function renderToday(bills, today, goal) {
         <span class="today-amt">+${money(t.usd)}${cadNote(t.usd, b)}</span>
       </div>`;
     });
-    if (today.extra > 0.004) items.push(`<div class="today-item finished"><span>Extra beyond bills</span><span class="today-amt">+${money(today.extra)}</span></div>`);
+    if (today.extra > 0.004) items.push(`<div class="today-item finished"><span>Extra beyond costs</span><span class="today-amt">+${money(today.extra)}</span></div>`);
   }
   const next = bills.find((b) => !isDone(today.putAll[b.id], b));
   const nextLine = today.ms > 0 && next && S.settings.allocation === 'smallest'
@@ -399,15 +414,18 @@ function renderBills() {
   $('m-next').disabled = viewMonth >= monthKey(Date.now());
   $('m-next').style.visibility = viewMonth >= monthKey(Date.now()) ? 'hidden' : 'visible';
 
-  const bills = sortedBills();
-  const today = todayBreakdown(bills);
-  const goal = dailyGoal(bills);
+  // The Today card is always about this month; the list below follows the month you're viewing.
+  const curItems = costItems();
+  const today = todayBreakdown(curItems);
+  const goal = dailyGoal(curItems);
   recordGoal(goal);
-  renderToday(bills, today, goal);
+  renderToday(curItems, today, goal);
 
+  const bills = isCurrent ? curItems : costItems(viewMonth);
   const { gross, ms, outside } = monthGross(viewMonth);
   const totalGross = gross + outside;
-  const net = toNet(totalGross);
+  const income = monthIncome(viewMonth);
+  const net = toNet(totalGross) + income; // money available for costs
   const total = bills.reduce((a, b) => a + b.usd, 0);
   const extra = Math.max(0, net - total);
   const tax = S.settings.taxEnabled;
@@ -416,11 +434,12 @@ function renderBills() {
     { k: tax ? 'Earned (before tax)' : 'Earned', v: money(totalGross) },
     { k: 'Hours logged', v: fmtHours(ms) },
   ];
-  if (tax) stats.push({ k: `After ${S.settings.taxRate}% set-aside`, v: money(net) });
+  if (tax) stats.push({ k: `After ${S.settings.taxRate}% set-aside`, v: money(toNet(totalGross)) });
+  if (income > 0) stats.push({ k: 'Other income', v: money(income) });
   if (total > 0) {
     stats.push(extra > 0
-      ? { k: 'Extra beyond bills', v: '+' + money(extra), cls: 'good' }
-      : { k: 'Left to cover bills', v: money(total - net) });
+      ? { k: 'Extra beyond costs', v: '+' + money(extra), cls: 'good' }
+      : { k: 'Left to cover', v: money(total - net) });
   }
   $('stats').innerHTML = stats.map((s) => `<div class="stat ${s.cls || ''}"><div class="k">${esc(s.k)}</div><div class="v">${esc(s.v)}</div></div>`).join('');
 
@@ -435,7 +454,7 @@ function renderBills() {
   big.classList.toggle('done', bigDone);
   big.hidden = total === 0;
   $('big-caption').textContent = total > 0
-    ? `${money(Math.min(net, total))} of ${money(total)} in bills (${Math.floor(pct)}%)${extra > 0 ? ` · ${money(extra)} extra` : ''}`
+    ? `${money(Math.min(net, total))} of ${money(total)} in monthly costs (${Math.floor(pct)}%)${extra > 0 ? ` · ${money(extra)} extra` : ''}`
     : '';
 
   const alloc = S.settings.allocation;
@@ -446,8 +465,8 @@ function renderBills() {
 
   if (!bills.length) {
     $('covered').textContent = '';
-    $('bill-list').innerHTML = `<div class="empty">Add your monthly bills to see how close you are to covering them.<br><button class="primary" id="empty-add-bills">Add bills</button></div>`;
-    $('empty-add-bills').onclick = openBills;
+    $('bill-list').innerHTML = `<div class="empty">Add your monthly costs to see how close you are to covering them.<br><button class="primary" id="empty-add-bills">Add monthly costs</button></div>`;
+    $('empty-add-bills').onclick = openCosts;
   } else {
     const puts = allocate(net, bills);
     // Unfinished bills first (smallest first), paid-off bills at the bottom.
@@ -467,17 +486,19 @@ function renderBills() {
       const right = done
         ? '<span class="covered-label">Covered</span>'
         : `${money(b.usd - put)} <span class="muted">to go</span>${cadNote(b.usd - put, b, 'cad-sub')}`;
+      const tag = b.kind === 'estimate' ? '<span class="kind-tag">Estimate</span>' : b.kind === 'oneoff' ? '<span class="kind-tag">One-off</span>' : '';
+      const due = b.kind === 'bill' && b.dueDay ? `<span class="due">due ${ordinal(b.dueDay)}</span>` : '';
       return `<div class="bill-row ${done ? 'is-done' : ''}">
-        <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}</div><div class="bill-sub">${sub}</div></div>
+        <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Cost')}${tag}${due}</div><div class="bill-sub">${sub}</div></div>
         <div class="bar ${done ? 'done' : ''} ${wToday > 0 ? 'has-today' : ''}"><div style="width:${wBefore}%"></div><div class="today" style="width:${wToday}%"></div></div>
         <div class="bill-amt">${right}${t ? `<span class="today-tag">+${money(t.usd)} today</span>` : ''}</div>
       </div>`;
     }).join('');
-    $('covered').textContent = `${covered} of ${bills.length} bills covered`;
+    $('covered').textContent = `${covered} of ${bills.length} costs covered`;
   }
 
   const fx = S.fx;
-  $('fx-note').textContent = S.bills.some((b) => b.currency === 'CAD')
+  $('fx-note').textContent = [...bills, ...S.income].some((b) => b.currency === 'CAD')
     ? `1 CAD = ${fx.rate.toFixed(4)} USD${fx.date ? ` · ${fx.date}` : ' · default rate'}`
     : '';
 }
@@ -860,7 +881,7 @@ function renderCal() {
   const parts = [isCurrent ? `${workLeft} workday${workLeft === 1 ? '' : 's'} left this month` : `${work} workday${work === 1 ? '' : 's'}`];
   if (off) parts.push(`${off} day${off === 1 ? '' : 's'} off`);
   if (isCurrent) {
-    const g = dailyGoal(sortedBills());
+    const g = dailyGoal(costItems());
     if (g.workday && g.target > 0) parts.push(`today's goal ${money(g.target)}`);
   }
   $('cal-summary').textContent = parts.join(' · ');
@@ -878,37 +899,151 @@ function toggleDayOff(k) {
   renderHistory();
 }
 
-// ---------- Bills dialog ----------
+// ---------- Monthly costs dialog ----------
+//
+// Four sections: recurring bills, estimated spending (both stored in S.bills
+// with a `kind`), one-off costs for the month being viewed, and other income.
 
-function openBills() { renderBillsEditor(); $('bills-dialog').showModal(); }
+let costMonth = null;
 
-function renderBillsEditor() {
-  $('bills-edit').innerHTML = S.bills.length ? S.bills.map((b) => `
-    <div class="edit-row bill" data-id="${b.id}">
-      <input type="text" data-k="name" value="${esc(b.name)}" placeholder="Bill name" aria-label="Bill name">
-      <input type="number" data-k="amount" value="${b.amount}" min="0" step="0.01" inputmode="decimal" aria-label="Amount">
-      <select data-k="currency" aria-label="Currency"><option ${b.currency === 'CAD' ? 'selected' : ''}>CAD</option><option ${b.currency === 'USD' ? 'selected' : ''}>USD</option></select>
-      <button type="button" class="ghost danger-text" data-del aria-label="Delete bill">✕</button>
-    </div>`).join('') : '<p class="muted small">No bills yet.</p>';
+const COST_SECTIONS = [
+  { kind: 'bill', title: 'Bills', add: '+ Add bill', placeholder: 'Rent', per: '/mo',
+    help: () => 'The same amount every month, like rent or your phone.' },
+  { kind: 'estimate', title: 'Estimated spending', add: '+ Add estimate', placeholder: 'Groceries', per: '/mo',
+    help: () => 'Costs that change month to month, like groceries or gas. Use your best monthly estimate.' },
+  { kind: 'oneoff', title: 'One-off costs', add: '+ Add one-off cost', placeholder: 'Car repair', per: '',
+    help: () => `Only count in ${monthLabel(costMonth)}.` },
+  { kind: 'income', title: 'Other income', add: '+ Add income', placeholder: 'Side gig', per: '',
+    help: () => "Money coming in besides your hourly work, after tax. It lowers what you need to earn." },
+];
+
+function costStore(kind) { return kind === 'oneoff' ? S.oneOffs : kind === 'income' ? S.income : S.bills; }
+function sectionItems(kind) {
+  if (kind === 'oneoff') return S.oneOffs.filter((o) => o.month === costMonth);
+  if (kind === 'income') return S.income.filter((i) => i.recurring || i.month === costMonth);
+  return S.bills.filter((b) => (b.kind || 'bill') === kind);
+}
+const sectionUsd = (kind) => sectionItems(kind).reduce((a, i) => a + (i.amount > 0 ? billUsd(i) : 0), 0);
+
+function openCosts() {
+  costMonth = viewMonth;
+  renderCostsEditor();
+  $('costs-dialog').showModal();
 }
 
-function onBillsEdit(ev) {
-  const row = ev.target.closest('.edit-row');
-  if (!row) return;
-  const b = S.bills.find((x) => x.id === row.dataset.id);
-  if (!b) return;
-  if (ev.type === 'click' && ev.target.closest('[data-del]')) {
-    const i = S.bills.indexOf(b);
-    S.bills.splice(i, 1);
-    save(); renderBillsEditor(); renderBills();
-    toast(`${b.name || 'Bill'} removed`, () => { S.bills.splice(i, 0, b); save(); renderBillsEditor(); renderBills(); });
+function costRow(kind, item, placeholder) {
+  const cur = (c) => `<option ${item.currency === c ? 'selected' : ''}>${c}</option>`;
+  let extra = '';
+  if (kind === 'bill') {
+    extra = `<input type="text" class="cf-cat" data-k="category" value="${esc(item.category || '')}" list="category-list" placeholder="Category" aria-label="Category">
+      <input type="number" class="cf-due" data-k="dueDay" value="${item.dueDay || ''}" min="1" max="31" step="1" inputmode="numeric" placeholder="Due day" aria-label="Due day of the month">`;
+  } else if (kind === 'income') {
+    extra = `<select class="cf-when" data-k="recurring" aria-label="How often">
+        <option value="1" ${item.recurring ? 'selected' : ''}>Every month</option>
+        <option value="0" ${item.recurring ? '' : 'selected'}>This month only</option>
+      </select>`;
+  }
+  return `<div class="cost-row" data-kind="${kind}" data-id="${item.id}">
+    <input type="text" class="cf-name" data-k="name" value="${esc(item.name)}" placeholder="${esc(placeholder)}" aria-label="Name">
+    <input type="number" class="cf-amt" data-k="amount" value="${item.amount || ''}" min="0" step="0.01" inputmode="decimal" placeholder="0.00" aria-label="Amount">
+    <select class="cf-cur" data-k="currency" aria-label="Currency">${cur('CAD')}${cur('USD')}</select>
+    ${extra}
+    <button type="button" class="ghost danger-text cf-del" data-del aria-label="Remove">✕</button>
+  </div>`;
+}
+
+/** ‹ Month › switcher for one-off costs (and one-time income), from 12 months back to 12 ahead. */
+function monthPicker() {
+  const now = monthKey(Date.now());
+  const prev = costMonth > shiftMonth(now, -12), next = costMonth < shiftMonth(now, 12);
+  return `<span class="month-pick">
+    <button type="button" class="ghost" data-cm="-1" aria-label="Previous month" ${prev ? '' : 'disabled'}>‹</button>
+    <span>${esc(new Date(+costMonth.slice(0, 4), +costMonth.slice(5) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))}</span>
+    <button type="button" class="ghost" data-cm="1" aria-label="Next month" ${next ? '' : 'disabled'}>›</button>
+  </span>`;
+}
+
+function renderCostsEditor() {
+  $('costs-edit').innerHTML = COST_SECTIONS.map((sec) => {
+    const items = sectionItems(sec.kind);
+    return `<section class="cost-sec" data-sec="${sec.kind}">
+      <div class="cost-sec-head"><h4>${sec.title}</h4>${sec.kind === 'oneoff' ? monthPicker() : ''}<span class="cost-sub" data-sub="${sec.kind}"></span></div>
+      <p class="muted small">${esc(sec.help())}</p>
+      ${items.map((i) => costRow(sec.kind, i, sec.placeholder)).join('')}
+      <button type="button" class="ghost small-btn" data-add="${sec.kind}">${sec.add}</button>
+    </section>`;
+  }).join('');
+  updateCostTotals();
+}
+
+function updateCostTotals() {
+  for (const sec of COST_SECTIONS) {
+    const el = $('costs-edit').querySelector(`[data-sub="${sec.kind}"]`);
+    const v = sectionUsd(sec.kind);
+    if (el) el.textContent = v > 0 ? money(v) + sec.per : '';
+  }
+  const costs = sectionUsd('bill') + sectionUsd('estimate') + sectionUsd('oneoff');
+  const income = sectionUsd('income');
+  $('costs-total').innerHTML = `${money(costs)} in costs${income > 0 ? ` − ${money(income)} other income` : ''}
+    = <strong>${money(Math.max(0, costs - income))}</strong> to cover in ${esc(monthLabel(costMonth))}`;
+}
+
+function findCost(row) {
+  return costStore(row.dataset.kind).find((x) => x.id === row.dataset.id);
+}
+
+function onCostsEdit(ev) {
+  const cm = ev.type === 'click' && ev.target.closest('[data-cm]');
+  if (cm) { costMonth = shiftMonth(costMonth, +cm.dataset.cm); renderCostsEditor(); return; }
+  const add = ev.type === 'click' && ev.target.closest('[data-add]');
+  if (add) {
+    const kind = add.dataset.add;
+    const item = { id: uid(), name: '', amount: 0, currency: kind === 'income' ? 'USD' : 'CAD' };
+    if (kind === 'bill' || kind === 'estimate') Object.assign(item, { kind, category: '', dueDay: null });
+    if (kind === 'oneoff') item.month = costMonth;
+    if (kind === 'income') item.recurring = true;
+    costStore(kind).push(item);
+    save();
+    renderCostsEditor();
+    $('costs-edit').querySelector(`.cost-row[data-id="${item.id}"] .cf-name`)?.focus();
     return;
   }
+  const row = ev.target.closest('.cost-row');
+  if (!row) return;
+  const item = findCost(row);
+  if (!item) return;
+  const store = costStore(row.dataset.kind);
+  if (ev.type === 'click' && ev.target.closest('[data-del]')) {
+    const i = store.indexOf(item);
+    store.splice(i, 1);
+    save(); renderCostsEditor(); renderBills();
+    toast(`${item.name || 'Item'} removed`, () => { store.splice(i, 0, item); save(); if ($('costs-dialog').open) renderCostsEditor(); renderBills(); });
+    return;
+  }
+  if (ev.type === 'click') return;
   const k = ev.target.dataset.k;
   if (!k) return;
-  if (k === 'amount') { const v = parseFloat(ev.target.value); b.amount = Number.isFinite(v) && v >= 0 ? v : 0; }
-  else b[k] = ev.target.value;
-  save(); renderBills();
+  const v = ev.target.value;
+  if (k === 'amount') { const n = parseFloat(v); item.amount = Number.isFinite(n) && n >= 0 ? n : 0; }
+  else if (k === 'dueDay') { const n = parseInt(v, 10); item.dueDay = n >= 1 && n <= 31 ? n : null; }
+  else if (k === 'recurring') {
+    item.recurring = v === '1';
+    if (item.recurring) delete item.month; else item.month = costMonth;
+  } else item[k] = v;
+  save();
+  updateCostTotals();
+  renderBills();
+}
+
+/** Drop rows left completely empty when the dialog closes. */
+function pruneEmptyCosts() {
+  const empty = (x) => !String(x.name || '').trim() && !(x.amount > 0);
+  const n = S.bills.length + S.oneOffs.length + S.income.length;
+  S.bills = S.bills.filter((x) => !empty(x));
+  S.oneOffs = S.oneOffs.filter((x) => !empty(x));
+  S.income = S.income.filter((x) => !empty(x));
+  if (S.bills.length + S.oneOffs.length + S.income.length !== n) save();
+  renderBills();
 }
 
 // ---------- Outside earnings ----------
@@ -1079,7 +1214,7 @@ function wire() {
 
   $('alloc-smallest').onclick = () => { S.settings.allocation = 'smallest'; save(); renderBills(); };
   $('alloc-prop').onclick = () => { S.settings.allocation = 'proportional'; save(); renderBills(); };
-  $('open-bills').onclick = openBills;
+  $('open-costs').onclick = openCosts;
   $('open-extra').onclick = openOutside;
   $('open-settings').onclick = openSettings;
   $('add-manual').onclick = () => openEntry(null);
@@ -1115,22 +1250,9 @@ function wire() {
     if (p && !editing.id) { $('e-rate').value = p.rate; updateEntrySummary(); }
   });
 
-  // Bills dialog
-  $('bills-edit').addEventListener('input', onBillsEdit);
-  $('bills-edit').addEventListener('change', onBillsEdit);
-  $('bills-edit').addEventListener('click', onBillsEdit);
-  $('bill-add').onclick = () => {
-    S.bills.push({ id: uid(), name: '', amount: 0, currency: 'CAD' });
-    save(); renderBillsEditor(); renderBills();
-    const inputs = $('bills-edit').querySelectorAll('input[data-k="name"]');
-    inputs[inputs.length - 1]?.focus();
-  };
-  $('bills-dialog').addEventListener('close', () => {
-    const before = S.bills.length;
-    S.bills = S.bills.filter((b) => b.name.trim() || b.amount > 0);
-    if (S.bills.length !== before) save();
-    renderBills();
-  });
+  // Monthly costs dialog
+  ['input', 'change', 'click'].forEach((t) => $('costs-edit').addEventListener(t, onCostsEdit));
+  $('costs-dialog').addEventListener('close', pruneEmptyCosts);
 
   // Outside earnings
   $('extra-form').addEventListener('submit', saveOutside);

@@ -76,7 +76,7 @@
       <span class="muted small" id="fx-note"></span>
       <span class="foot-actions">
         <button class="ghost small-btn" id="open-extra">Add outside earnings</button>
-        <button class="ghost small-btn" id="open-bills">Edit bills</button>
+        <button class="ghost small-btn" id="open-costs">Edit monthly costs</button>
       </span>
     </div>
   </section>
@@ -126,16 +126,21 @@
   </form>
 </dialog>
 
-<!-- Bills dialog -->
-<dialog id="bills-dialog">
+<!-- Monthly costs dialog -->
+<dialog id="costs-dialog" class="wide">
   <div class="dialog-body">
-    <h3>Monthly bills</h3>
-    <p class="muted small">These apply to every month. Amounts in CAD are converted to USD at today's rate.</p>
-    <div id="bills-edit"></div>
-    <button type="button" class="ghost small-btn" id="bill-add">+ Add bill</button>
+    <h3>Monthly costs</h3>
+    <p class="muted small">Everything you need to cover each month. CAD amounts are converted to USD at today's rate.</p>
+    <div id="costs-edit"></div>
+    <div class="costs-total small" id="costs-total"></div>
     <div class="dialog-actions"><button class="primary" data-close>Done</button></div>
   </div>
 </dialog>
+<datalist id="category-list">
+  <option value="Housing"></option><option value="Utilities"></option><option value="Phone and internet"></option>
+  <option value="Insurance"></option><option value="Transportation"></option><option value="Subscriptions"></option>
+  <option value="Debt payments"></option><option value="Health"></option><option value="Other"></option>
+</datalist>
 
 <!-- Days off dialog -->
 <dialog id="daysoff-dialog">
