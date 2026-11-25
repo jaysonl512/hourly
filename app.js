@@ -28,6 +28,7 @@ function blankState() {
     entries: [],           // {id, projectId, projectName, rate, desc, segments: [{start, end}]}
     outside: {},           // {'2026-11': 1234.56} USD earned outside the app, per month
     dailyGoals: {},        // {'2026-11-25': 212.4} each weekday's goal, as it stood that day
+    daysOff: {},           // {'2026-11-26': true} weekdays taken off (no goal)
     timer: null,           // {projectName, rate, desc, segments: [{start, end|null}]}
     settings: { allocation: 'smallest', taxEnabled: false, taxRate: 25 },
     fx: { rate: DEFAULT_CAD_USD, date: null, fetchedOn: null },
@@ -302,7 +303,10 @@ function todayBreakdown(bills) {
 // month, including today. Today's own earnings don't move today's goal, so it
 // stays put while you work; beating it lowers tomorrow's, falling short raises it.
 
-const isWorkday = (ts) => { const d = new Date(ts).getDay(); return d >= 1 && d <= 5; };
+const isWeekday = (ts) => { const d = new Date(ts).getDay(); return d >= 1 && d <= 5; };
+const isDayOff = (ts) => !!S.daysOff[localDateStr(ts)];
+/** A workday is a weekday you haven't taken off. Only workdays get a goal. */
+const isWorkday = (ts) => isWeekday(ts) && !isDayOff(ts);
 
 /** Weekdays from the day of `ts` through the end of its month, including that day. */
 function workdaysLeftInMonth(ts) {
@@ -325,7 +329,7 @@ function dailyGoal(bills) {
   const workday = isWorkday(now);
   const daysLeft = workdaysLeftInMonth(now);
   const target = workday && daysLeft > 0 ? grossFromNet(remaining / daysLeft) : 0;
-  return { total, remaining, workday, daysLeft, target };
+  return { total, remaining, workday, dayOff: isWeekday(now) && isDayOff(now), daysLeft, target };
 }
 
 /** Save today's goal so history shows the goal you had that day. Only writes when it changes. */
@@ -342,14 +346,18 @@ const cadNote = (usdAmt, b, cls = 'cad-inline') => (b.currency === 'CAD' ? `<spa
 function renderToday(bills, today, goal) {
   const earned = today.gross;
   $('today-total').textContent = today.ms > 0 ? fmtHours(today.ms) : '';
+  const offCount = upcomingDaysOff();
+  const offLink = `<button type="button" class="link-btn" data-open-daysoff>${offCount ? `Days off (${offCount})` : 'Days off'}</button>`;
   const big = `<div class="goal-line"><span class="goal-big">${money(earned)}</span>`;
   let head;
   if (!bills.length) {
     head = `${big}<span class="muted">earned today</span></div><p class="muted small">Add your bills to get a daily goal.</p>`;
+  } else if (goal.dayOff) {
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">You've taken today off, so there's no goal. Anything you earn is extra. · ${offLink}</p>`;
   } else if (!goal.workday) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">It's the weekend, so there's no goal today. Everything you earn is extra.</p>`;
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">It's the weekend, so there's no goal today. Everything you earn is extra. · ${offLink}</p>`;
   } else if (goal.target <= 0) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Your bills for this month are covered. Everything you earn today is extra.</p>`;
+    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Your bills for this month are covered. Everything you earn today is extra. · ${offLink}</p>`;
   } else {
     const extra = Math.max(0, earned - goal.target);
     const scale = Math.max(earned, goal.target);
@@ -362,7 +370,7 @@ function renderToday(bills, today, goal) {
     head = `${big}<span class="muted">of ${money(goal.target)} goal</span></div>
       <div class="bar big ${green > 0 ? 'has-today' : ''}"><div style="width:${blue}%"></div><div class="today" style="width:${green}%"></div></div>
       <div class="goal-status small">${status}</div>
-      <p class="muted small goal-basis">${money(goal.remaining)} left in bills ÷ ${goal.daysLeft} weekday${goal.daysLeft === 1 ? '' : 's'} left this month${tax}</p>`;
+      <p class="muted small goal-basis">${money(goal.remaining)} left in bills ÷ ${goal.daysLeft} workday${goal.daysLeft === 1 ? '' : 's'} left this month${tax} · ${offLink}</p>`;
   }
 
   let items = [];
@@ -529,6 +537,7 @@ function groupBy(list, keyFn) {
 }
 
 function goalBadge(dayKey, items) {
+  if (S.daysOff[dayKey]) return '<span class="goal-badge">Day off</span>';
   const goal = S.dailyGoals[dayKey];
   if (!(goal > 0)) return '';
   const earned = items.reduce((a, e) => a + entryGross(e), 0);
@@ -804,6 +813,71 @@ function deleteEntry(id) {
   toast('Entry deleted', () => { S.entries.push(removed); save(); renderAll(); });
 }
 
+// ---------- Days off ----------
+
+let calMonth = null;
+
+/** Weekdays taken off from today through the end of this month. */
+function upcomingDaysOff() {
+  const today = localDateStr();
+  const month = today.slice(0, 7);
+  return Object.keys(S.daysOff).filter((k) => S.daysOff[k] && k >= today && k.startsWith(month)).length;
+}
+
+function openDaysOff() {
+  calMonth = monthKey(Date.now());
+  renderCal();
+  $('daysoff-dialog').showModal();
+}
+
+function renderCal() {
+  const [y, m] = calMonth.split('-').map(Number);
+  const todayStr = localDateStr();
+  const isCurrent = calMonth === monthKey(Date.now());
+  $('cal-label').textContent = monthLabel(calMonth);
+  $('cal-prev').style.visibility = isCurrent ? 'hidden' : 'visible';
+  $('cal-next').style.visibility = calMonth >= shiftMonth(monthKey(Date.now()), 12) ? 'hidden' : 'visible';
+
+  const d = new Date(y, m - 1, 1, 12);
+  let html = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((n) => `<div class="cal-h">${n}</div>`).join('');
+  html += '<div></div>'.repeat((d.getDay() + 6) % 7);
+  let work = 0, workLeft = 0, off = 0;
+  while (d.getMonth() === m - 1) {
+    const k = localDateStr(d.getTime());
+    const wd = isWeekday(d.getTime());
+    const past = k < todayStr;
+    const isOff = wd && !!S.daysOff[k];
+    if (wd) { if (isOff) off++; else { work++; if (!past) workLeft++; } }
+    const cls = `cal-d ${wd ? 'wd' : 'we'}${isOff ? ' off' : ''}${past ? ' past' : ''}${k === todayStr ? ' today' : ''}`;
+    const label = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    const inner = `${d.getDate()}${isOff ? '<span>Off</span>' : k === todayStr ? '<span>Today</span>' : ''}`;
+    html += wd && !past
+      ? `<button type="button" class="${cls}" data-date="${k}" aria-pressed="${isOff}" aria-label="${esc(label)}${isOff ? ', day off' : ''}">${inner}</button>`
+      : `<div class="${cls}">${inner}</div>`;
+    d.setDate(d.getDate() + 1);
+  }
+  $('cal-grid').innerHTML = html;
+  const parts = [isCurrent ? `${workLeft} workday${workLeft === 1 ? '' : 's'} left this month` : `${work} workday${work === 1 ? '' : 's'}`];
+  if (off) parts.push(`${off} day${off === 1 ? '' : 's'} off`);
+  if (isCurrent) {
+    const g = dailyGoal(sortedBills());
+    if (g.workday && g.target > 0) parts.push(`today's goal ${money(g.target)}`);
+  }
+  $('cal-summary').textContent = parts.join(' · ');
+}
+
+function toggleDayOff(k) {
+  if (S.daysOff[k]) delete S.daysOff[k];
+  else {
+    S.daysOff[k] = true;
+    delete S.dailyGoals[k]; // a day off has no goal
+  }
+  save();
+  renderCal();
+  renderBills();
+  renderHistory();
+}
+
 // ---------- Bills dialog ----------
 
 function openBills() { renderBillsEditor(); $('bills-dialog').showModal(); }
@@ -1060,6 +1134,12 @@ function wire() {
 
   // Outside earnings
   $('extra-form').addEventListener('submit', saveOutside);
+
+  // Days off
+  $('today-body').addEventListener('click', (ev) => { if (ev.target.closest('[data-open-daysoff]')) openDaysOff(); });
+  $('cal-grid').addEventListener('click', (ev) => { const b = ev.target.closest('[data-date]'); if (b) toggleDayOff(b.dataset.date); });
+  $('cal-prev').onclick = () => { calMonth = shiftMonth(calMonth, -1); renderCal(); };
+  $('cal-next').onclick = () => { calMonth = shiftMonth(calMonth, 1); renderCal(); };
 
   // Settings
   $('projects-edit').addEventListener('change', onProjectsEdit);

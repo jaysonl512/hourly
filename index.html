@@ -137,6 +137,22 @@
   </div>
 </dialog>
 
+<!-- Days off dialog -->
+<dialog id="daysoff-dialog">
+  <div class="dialog-body">
+    <h3>Days off</h3>
+    <p class="muted small">Tap a weekday to take it off. Your daily goal spreads over the workdays that are left.</p>
+    <div class="cal-nav">
+      <button type="button" class="ghost icon" id="cal-prev" aria-label="Previous month">‹</button>
+      <strong id="cal-label"></strong>
+      <button type="button" class="ghost icon" id="cal-next" aria-label="Next month">›</button>
+    </div>
+    <div class="cal" id="cal-grid"></div>
+    <p class="small cal-summary" id="cal-summary"></p>
+    <div class="dialog-actions"><button class="primary" data-close>Done</button></div>
+  </div>
+</dialog>
+
 <!-- Extra earnings dialog -->
 <dialog id="extra-dialog">
   <form method="dialog" id="extra-form">
