@@ -347,6 +347,30 @@ function dailyGoal(bills) {
   return { total, remaining, workday, dayOff: isWeekday(now) && isDayOff(now), daysLeft, target };
 }
 
+/**
+ * Average hourly rate you actually earned (paid earnings ÷ paid hours) this month.
+ * Falls back to last month, then to the timer's rate, when there's no history yet.
+ */
+function averageRate() {
+  const calc = (key) => {
+    let g = 0, ms = 0;
+    for (const e of S.entries) if (monthKey(entryStart(e)) === key) { g += entryGross(e); ms += entryBillableMs(e); }
+    return ms >= MINUTE ? g / (ms / HOUR) : null;
+  };
+  const name = (key) => new Date(+key.slice(0, 4), +key.slice(5) - 1, 1).toLocaleDateString(undefined, { month: 'long' });
+  const cur = monthKey(Date.now());
+  const prev = shiftMonth(cur, -1);
+  const a = calc(cur);
+  if (a > 0) return { rate: a, label: `your ${name(cur)} average` };
+  const b = calc(prev);
+  if (b > 0) return { rate: b, label: `your ${name(prev)} average` };
+  const r = S.timer ? S.timer.rate : currentRate();
+  return r > 0 ? { rate: r, label: 'your current rate' } : null;
+}
+
+/** Work time needed to earn `usdAmount` at `rate`, rounded up to the whole minute (pay is per whole minute). */
+const timeToEarn = (usdAmount, rate) => Math.ceil(((usdAmount / rate) * HOUR) / MINUTE) * MINUTE;
+
 /** Save today's goal so history shows the goal you had that day. Only writes when it changes. */
 function recordGoal(goal) {
   if (!goal.workday || goal.total <= 0) return;
@@ -357,6 +381,13 @@ function recordGoal(goal) {
 
 /** Small grey CAD amount shown next to a USD figure for CAD bills. */
 const cadNote = (usdAmt, b, cls = 'cad-inline') => (b.currency === 'CAD' ? `<span class="${cls}">${esc(cad.format(usdAmt / S.fx.rate))}</span>` : '');
+
+/** " · about 3h 26m of work at $32.00/hr (your November average)" */
+function timeLeft(usdLeft) {
+  const avg = averageRate();
+  if (!avg) return '';
+  return ` · about ${fmtHours(timeToEarn(usdLeft, avg.rate))} of work <span class="muted time-basis">at ${money(avg.rate)}/hr (${esc(avg.label)})</span>`;
+}
 
 function renderToday(bills, today, goal) {
   const earned = today.gross;
@@ -380,7 +411,7 @@ function renderToday(bills, today, goal) {
     const green = (extra / scale) * 100;
     const status = extra > 0.004
       ? `<span class="goal-hit">✓ Goal reached</span> · +${money(extra)} extra`
-      : earned >= goal.target - 0.004 ? '<span class="goal-hit">✓ Goal reached</span>' : `${money(goal.target - earned)} to go`;
+      : earned >= goal.target - 0.004 ? '<span class="goal-hit">✓ Goal reached</span>' : `${money(goal.target - earned)} to go${timeLeft(goal.target - earned)}`;
     const tax = S.settings.taxEnabled ? `, plus your ${S.settings.taxRate}% tax set-aside` : '';
     head = `${big}<span class="muted">of ${money(goal.target)} goal</span></div>
       <div class="bar big ${green > 0 ? 'has-today' : ''}"><div style="width:${blue}%"></div><div class="today" style="width:${green}%"></div></div>
