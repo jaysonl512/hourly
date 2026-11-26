@@ -139,7 +139,7 @@ input:focus { border-color: var(--accent); outline: none; }
 .dash-sec + .dash-sec { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
 
 /* Project and rate */
-.dash-inputs { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 8px; }
+.dash-inputs { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 8px; }
 .dash-inputs input[type=text] { padding: 7px 10px; font-size: 14px; }
 .rate-input {
   display: flex; align-items: center; gap: 2px; padding: 0 9px;
@@ -153,6 +153,13 @@ input:focus { border-color: var(--accent); outline: none; }
 }
 .rate-input input:focus, .rate-input input:focus-visible { outline: none; }
 .rate-input input::-webkit-inner-spin-button, .rate-input input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.rate-steps { display: flex; flex-direction: column; margin: 0 -4px 0 6px; }
+.rate-steps button {
+  width: 18px; height: 14px; padding: 0; border: none; border-radius: 3px; background: transparent;
+  color: var(--text-3); font-size: 8px; line-height: 14px;
+}
+.rate-steps button:hover { color: var(--accent-text); background: var(--surface-2); }
+.rate-steps button:active { transform: none; color: var(--accent); }
 
 /* Session timer */
 .dash-timer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -380,7 +387,7 @@ dialog form, .dialog-body { padding: 20px; display: flex; flex-direction: column
   .card { padding: 16px; }
   .row2 { grid-template-columns: minmax(0, 1fr) 110px; }
   .dash { padding: 12px 14px; }
-  .dash-inputs { grid-template-columns: minmax(0, 1fr) 100px; }
+  .dash-inputs { grid-template-columns: minmax(0, 1fr) 124px; }
   .clock { font-size: 36px; }
   .session-earn { font-size: 12px; }
   #t-earn { font-size: 16px; }

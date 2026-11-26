@@ -24,11 +24,15 @@
   <section class="card timer dash" id="timer-card">
     <div class="dash-sec dash-inputs">
       <input id="t-project" type="text" list="project-list" placeholder="Project" aria-label="Project" autocomplete="off">
-      <label class="rate-input" title="Hourly rate (USD)">
+      <div class="rate-input" id="rate-wrap" title="Hourly rate">
         <span aria-hidden="true">$</span>
-        <input id="t-rate" type="number" inputmode="decimal" min="0" step="0.5" value="30" aria-label="Hourly rate in USD">
+        <input id="t-rate" type="number" inputmode="decimal" min="0" step="any" value="30" aria-label="Hourly rate">
         <span aria-hidden="true">/hr</span>
-      </label>
+        <span class="rate-steps">
+          <button type="button" data-rstep="1" tabindex="-1" aria-label="Raise rate by 1">▲</button>
+          <button type="button" data-rstep="-1" tabindex="-1" aria-label="Lower rate by 1">▼</button>
+        </span>
+      </div>
     </div>
 
     <div class="dash-sec dash-timer">
@@ -107,7 +111,7 @@
     <label class="field"><span>Description</span><input id="e-desc" type="text" autocomplete="off"></label>
     <div class="row2">
       <label class="field"><span>Project</span><input id="e-project" type="text" list="project-list" autocomplete="off"></label>
-      <label class="field rate"><span>Rate (USD/hr)</span><input id="e-rate" type="number" inputmode="decimal" min="0" step="0.01" required></label>
+      <label class="field rate"><span id="e-rate-label">Rate (USD/hr)</span><input id="e-rate" type="number" inputmode="decimal" min="0" step="0.01" required></label>
     </div>
     <div class="row2">
       <label class="field"><span>Date</span><select id="e-date"></select></label>
@@ -187,7 +191,7 @@
   <form method="dialog" id="extra-form">
     <h3>Outside earnings</h3>
     <p class="muted small" id="extra-help"></p>
-    <label class="field"><span>Amount (USD)</span><input id="x-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></label>
+    <label class="field"><span id="x-label">Amount (USD)</span><input id="x-amount" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00"></label>
     <div class="dialog-actions">
       <button type="button" class="ghost" data-close>Cancel</button>
       <button type="submit" class="primary">Save</button>
@@ -199,6 +203,11 @@
 <dialog id="settings-dialog">
   <div class="dialog-body">
     <h3>Settings</h3>
+
+    <h4>Earnings currency</h4>
+    <label class="field"><span>The currency you're paid in. Hourly rates use it and every total is shown in it; anything in the other currency is converted at the day's rate.</span>
+      <select id="s-base"><option value="USD">USD (US dollar)</option><option value="CAD">CAD (Canadian dollar)</option></select>
+    </label>
 
     <h4>Projects</h4>
     <p class="muted small">Each project remembers the last rate you used for it.</p>

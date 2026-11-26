@@ -28,11 +28,11 @@ function blankState() {
     oneOffs: [],           // {id, name, amount, currency, month: '2026-11'} costs for one month only
     income: [],            // {id, name, amount, currency, recurring, month} other income, after tax
     entries: [],           // {id, projectId, projectName, rate, desc, segments: [{start, end}]}
-    outside: {},           // {'2026-11': 1234.56} USD earned outside the app, per month
+    outside: {},           // {'2026-11': 1234.56} earned outside the app, per month (stored in USD)
     dailyGoals: {},        // {'2026-11-25': 212.4} each weekday's goal, as it stood that day
     daysOff: {},           // {'2026-11-26': true} weekdays taken off (no goal)
     timer: null,           // {projectName, rate, desc, segments: [{start, end|null}]}
-    settings: { allocation: 'smallest', taxEnabled: false, taxRate: 25 },
+    settings: { allocation: 'smallest', taxEnabled: false, taxRate: 25, baseCurrency: 'USD' },
     fx: { rate: DEFAULT_CAD_USD, date: null, fetchedOn: null },
   };
 }
@@ -74,9 +74,32 @@ let viewMonth = monthKey(Date.now());
 
 const $ = (id) => document.getElementById(id);
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
-const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
-const cad = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'CAD' });
-const money = (n) => usd.format(Math.round(n * 100) / 100 || 0);
+// ---------- Currency ----------
+//
+// The earnings currency (Settings) is what hourly rates are in and what every
+// total is shown in. Anything in the other currency is converted at the day's
+// rate. S.fx.rate is always CAD -> USD.
+
+const BASE = () => S.settings.baseCurrency || 'USD';
+const fmtCache = {};
+const formatter = (cur) => {
+  const loc = BASE() === 'CAD' ? 'en-CA' : 'en-US'; // home currency shows as "$", the other as "CA$" / "US$"
+  return (fmtCache[cur + loc] ||= new Intl.NumberFormat(loc, { style: 'currency', currency: cur }));
+};
+/** Format an amount that's in the earnings currency. */
+const money = (n) => formatter(BASE()).format(Math.round(n * 100) / 100 || 0);
+/** Format an amount in a specific currency, e.g. "CA$65.00". */
+const moneyIn = (n, cur) => formatter(cur).format(n);
+/** Convert an amount in `cur` to the earnings currency. */
+function toBase(amount, cur = 'USD') {
+  if (cur === BASE()) return amount;
+  return cur === 'CAD' ? amount * S.fx.rate : amount / S.fx.rate;
+}
+/** Convert an amount in the earnings currency to `cur`. */
+function fromBase(amount, cur = 'USD') {
+  if (cur === BASE()) return amount;
+  return cur === 'CAD' ? amount / S.fx.rate : amount * S.fx.rate;
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function monthKey(ts) {
@@ -126,7 +149,7 @@ const entryMs = (e) => e.segments.reduce((a, s) => a + segMs(s), 0);
 const entryStart = (e) => Math.min(...e.segments.map((s) => s.start));
 const entryEnd = (e) => Math.max(...e.segments.map((s) => s.end));
 const entryBillableMs = (e) => billableMs(entryMs(e));
-const entryGross = (e) => (entryBillableMs(e) / HOUR) * e.rate;
+const entryGross = (e) => toBase((entryBillableMs(e) / HOUR) * e.rate, e.currency || 'USD');
 
 function projectById(id) { return S.projects.find((p) => p.id === id); }
 function projectByName(name) {
@@ -140,9 +163,14 @@ function upsertProject(name, rate) {
   name = name.trim();
   if (!name) return null;
   let p = projectByName(name);
-  if (!p) { p = { id: uid(), name, rate }; S.projects.push(p); }
-  else if (Number.isFinite(rate)) p.rate = rate;
+  if (!p) { p = { id: uid(), name, rate, currency: BASE() }; S.projects.push(p); }
+  else if (Number.isFinite(rate)) { p.rate = rate; p.currency = BASE(); }
   return p;
+}
+
+/** A project's saved rate in the earnings currency (converted if it was saved in the other one). */
+function projectRate(p) {
+  return Math.round(toBase(p.rate, p.currency || 'USD') * 100) / 100;
 }
 
 /** Net = what counts toward bills, after the optional tax set-aside. */
@@ -150,7 +178,8 @@ function toNet(gross) {
   const st = S.settings;
   return st.taxEnabled ? gross * (1 - Math.min(90, Math.max(0, st.taxRate || 0)) / 100) : gross;
 }
-const billUsd = (b) => (b.currency === 'CAD' ? b.amount * S.fx.rate : b.amount);
+/** A bill / expense / income item's amount in the earnings currency. */
+const itemBase = (b) => toBase(b.amount, b.currency);
 
 // ---------- Timer ----------
 
@@ -164,6 +193,7 @@ function timerGo() {
     S.timer = {
       projectName: $('t-project').value.trim(),
       rate: currentRate(),
+      currency: BASE(),
       desc: '',
       segments: [{ start: now, end: null }],
     };
@@ -185,7 +215,7 @@ function timerStop() {
   S.timer = null;
   if (segments.length) {
     const p = upsertProject(t.projectName, t.rate);
-    S.entries.push({ id: uid(), projectId: p?.id || null, projectName: p?.name || '', rate: t.rate, desc: t.desc, segments });
+    S.entries.push({ id: uid(), projectId: p?.id || null, projectName: p?.name || '', rate: t.rate, currency: t.currency || BASE(), desc: t.desc, segments });
   }
   viewMonth = monthKey(now);
   save();
@@ -210,6 +240,22 @@ function onTimerInput() {
   renderTick();
 }
 
+/** Raise or lower the timer's hourly rate by exactly `delta` (typed cents are kept). */
+function stepRate(delta) {
+  const cur = parseFloat($('t-rate').value) || 0;
+  const next = Math.max(0, Math.round((cur + delta) * 100) / 100);
+  $('t-rate').value = Number.isInteger(next) ? String(next) : next.toFixed(2);
+  onTimerInput();
+  renderDaily();
+}
+
+/** Labels that name the earnings currency. */
+function applyCurrencyLabels() {
+  const b = BASE();
+  $('rate-wrap').title = `Hourly rate (${b})`;
+  $('t-rate').setAttribute('aria-label', `Hourly rate in ${b}`);
+}
+
 function syncTimerInputs() {
   if (!S.timer) return;
   $('t-project').value = S.timer.projectName || '';
@@ -225,7 +271,7 @@ function renderTick() {
   card.classList.toggle('running', running);
   card.classList.toggle('paused', !!S.timer && !running);
   $('clock').textContent = fmtClock(ms);
-  $('t-earn').textContent = money((billableMs(ms) / HOUR) * (S.timer ? S.timer.rate : currentRate()));
+  $('t-earn').textContent = money(toBase((billableMs(ms) / HOUR) * (S.timer ? S.timer.rate : currentRate()), S.timer?.currency || BASE()));
   $('t-state').hidden = !S.timer || running;
   document.title = S.timer ? `${running ? '▶' : '❚❚'} ${fmtClock(ms)} · Hourly` : 'Hourly';
 }
@@ -246,36 +292,36 @@ function monthGross(key, beforeTs = Infinity) {
   }
   if (S.timer) {
     const st = S.timer.segments[0].start;
-    if (monthKey(st) === key && st < beforeTs) { const t = timerMs(); ms += t; g += (billableMs(t) / HOUR) * S.timer.rate; }
+    if (monthKey(st) === key && st < beforeTs) { const t = timerMs(); ms += t; g += toBase((billableMs(t) / HOUR) * S.timer.rate, S.timer.currency || 'USD'); }
   }
-  return { gross: g, ms, outside: S.outside[key] || 0 };
+  return { gross: g, ms, outside: toBase(S.outside[key] || 0, 'USD') };
 }
 
 function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
-/** Everything to cover in a month (recurring bills and estimates, plus that month's one-offs), in USD, smallest first. */
+/** Everything to cover in a month (recurring bills and estimates, plus that month's one-offs), in the earnings currency, smallest first. */
 function costItems(key = monthKey(Date.now())) {
   return [
     ...S.bills.map((b) => ({ ...b, kind: b.kind || 'bill' })),
     ...S.oneOffs.filter((o) => o.month === key).map((o) => ({ ...o, kind: 'oneoff' })),
   ]
     .filter((b) => b.amount > 0)
-    .map((b) => ({ ...b, usd: billUsd(b) }))
-    .sort((a, b) => a.usd - b.usd);
+    .map((b) => ({ ...b, base: itemBase(b) }))
+    .sort((a, b) => a.base - b.base);
 }
-/** Other income for a month in USD. Treated as already after tax. */
-const monthIncome = (key) => S.income.filter((i) => i.amount > 0 && (i.recurring || i.month === key)).reduce((a, i) => a + billUsd(i), 0);
+/** Other income for a month in the earnings currency. Treated as already after tax. */
+const monthIncome = (key) => S.income.filter((i) => i.amount > 0 && (i.recurring || i.month === key)).reduce((a, i) => a + itemBase(i), 0);
 const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
-const isDone = (put, b) => b.usd <= 0 || put >= b.usd - 0.005;
+const isDone = (put, b) => b.base <= 0 || put >= b.base - 0.005;
 
-/** USD put toward each bill (keyed by id) out of `net` dollars. `bills` must be sorted smallest first. */
+/** Amount put toward each bill (keyed by id) out of `net` dollars. `bills` must be sorted smallest first. */
 function allocate(net, bills) {
-  const total = bills.reduce((a, b) => a + b.usd, 0);
+  const total = bills.reduce((a, b) => a + b.base, 0);
   const out = {};
   let left = Math.max(0, net);
   for (const b of bills) {
     let put;
-    if (S.settings.allocation === 'smallest') { put = Math.min(left, b.usd); left -= put; }
-    else put = total > 0 ? Math.min(b.usd, Math.max(0, net) * (b.usd / total)) : 0;
+    if (S.settings.allocation === 'smallest') { put = Math.min(left, b.base); left -= put; }
+    else put = total > 0 ? Math.min(b.base, Math.max(0, net) * (b.base / total)) : 0;
     out[b.id] = Math.max(0, put);
   }
   return out;
@@ -286,7 +332,7 @@ function todayBreakdown(bills) {
   const cur = monthKey(Date.now());
   const all = monthGross(cur);
   const before = monthGross(cur, startOfToday());
-  const total = bills.reduce((a, b) => a + b.usd, 0);
+  const total = bills.reduce((a, b) => a + b.base, 0);
   const income = monthIncome(cur);
   const netAll = toNet(all.gross + all.outside) + income;
   const netBefore = toNet(before.gross + all.outside) + income;
@@ -295,7 +341,7 @@ function todayBreakdown(bills) {
   const perBill = {};
   for (const b of bills) {
     const diff = putAll[b.id] - putBefore[b.id];
-    if (diff > 0.004) perBill[b.id] = { usd: diff, finished: isDone(putAll[b.id], b) && !isDone(putBefore[b.id], b) };
+    if (diff > 0.004) perBill[b.id] = { base: diff, finished: isDone(putAll[b.id], b) && !isDone(putBefore[b.id], b) };
   }
   return {
     gross: all.gross - before.gross,
@@ -333,7 +379,7 @@ const grossFromNet = (net) => (S.settings.taxEnabled ? net / (1 - Math.min(90, M
 
 function dailyGoal(bills) {
   const now = Date.now();
-  const total = bills.reduce((a, b) => a + b.usd, 0);
+  const total = bills.reduce((a, b) => a + b.base, 0);
   const before = monthGross(monthKey(now), startOfToday());
   const remaining = Math.max(0, total - toNet(before.gross + before.outside) - monthIncome(monthKey(now)));
 
@@ -367,19 +413,19 @@ function averageRate() {
   return r > 0 ? { rate: r, source: 'rate', short: 'project rate' } : null;
 }
 
-/** Work time needed to earn `usdAmount` at `rate`, rounded up to the whole minute (pay is per whole minute). */
-const timeToEarn = (usdAmount, rate) => Math.ceil(((usdAmount / rate) * HOUR) / MINUTE) * MINUTE;
+/** Work time needed to earn `amount` at `rate`, rounded up to the whole minute (pay is per whole minute). */
+const timeToEarn = (amount, rate) => Math.ceil(((amount / rate) * HOUR) / MINUTE) * MINUTE;
 
 /** Save today's goal so history shows the goal you had that day. Only writes when it changes. */
 function recordGoal(goal) {
   if (!goal.workday || goal.total <= 0) return;
   const k = localDateStr();
-  const v = Math.round(goal.target * 100) / 100;
+  const v = Math.round(fromBase(goal.target, 'USD') * 100) / 100; // stored in USD
   if (S.dailyGoals[k] !== v) { S.dailyGoals[k] = v; save(); }
 }
 
-/** Small grey CAD amount shown next to a USD figure for CAD bills. */
-const cadNote = (usdAmt, b, cls = 'cad-inline') => (b.currency === 'CAD' ? `<span class="${cls}">${esc(cad.format(usdAmt / S.fx.rate))}</span>` : '');
+/** Small grey amount in the item's own currency, shown when it differs from the earnings currency. */
+const cadNote = (baseAmt, b, cls = 'cad-inline') => (b.currency && b.currency !== BASE() ? `<span class="${cls}">${esc(moneyIn(fromBase(baseAmt, b.currency), b.currency))}</span>` : '');
 
 // ---------- Today's progress (dashboard card) ----------
 //
@@ -496,7 +542,7 @@ function renderBills() {
   const totalGross = gross + outside;
   const income = monthIncome(viewMonth);
   const net = toNet(totalGross) + income; // money available for costs
-  const total = bills.reduce((a, b) => a + b.usd, 0);
+  const total = bills.reduce((a, b) => a + b.base, 0);
   const extra = Math.max(0, net - total);
   const tax = S.settings.taxEnabled;
 
@@ -515,7 +561,7 @@ function renderBills() {
   const pct = total > 0 ? Math.min(100, (net / total) * 100) : 0;
   const big = $('big-bar');
   const bigDone = total > 0 && net >= total;
-  const todayToBills = isCurrent && !bigDone ? Object.values(today.perBill).reduce((a, t) => a + t.usd, 0) : 0;
+  const todayToBills = isCurrent && !bigDone ? Object.values(today.perBill).reduce((a, t) => a + t.base, 0) : 0;
   const pctToday = total > 0 ? (todayToBills / total) * 100 : 0;
   big.children[0].style.width = Math.max(0, pct - pctToday) + '%';
   big.children[1].style.width = pctToday + '%';
@@ -528,7 +574,7 @@ function renderBills() {
   const puts = allocate(net, bills);
   // Unfinished first (smallest first), paid off at the bottom.
   const rows = bills.map((b) => ({ b, put: puts[b.id], done: isDone(puts[b.id], b) }))
-    .sort((x, y) => (x.done - y.done) || (x.b.usd - y.b.usd));
+    .sort((x, y) => (x.done - y.done) || (x.b.base - y.b.base));
   const paidOff = rows.filter((r) => r.done).length;
   if (total > 0) {
     $('big-caption').textContent = `${money(Math.min(net, total))} of ${money(total)} covered · ${paidOff} of ${rows.length} paid off`
@@ -538,21 +584,21 @@ function renderBills() {
 
   const rowHtml = ({ b, put, done }) => {
     // Blue = covered before today, green = added today (this month only).
-    const tUsd = !done && isCurrent && today.perBill[b.id] ? today.perBill[b.id].usd : 0;
-    const wToday = b.usd > 0 ? (tUsd / b.usd) * 100 : 0;
-    const wBefore = done ? 100 : b.usd > 0 ? (Math.max(0, put - tUsd) / b.usd) * 100 : 100;
-    const sub = done ? `${money(b.usd)} · paid off` : `${money(put)} of ${money(b.usd)}`;
+    const tBase = !done && isCurrent && today.perBill[b.id] ? today.perBill[b.id].base : 0;
+    const wToday = b.base > 0 ? (tBase / b.base) * 100 : 0;
+    const wBefore = done ? 100 : b.base > 0 ? (Math.max(0, put - tBase) / b.base) * 100 : 100;
+    const sub = done ? `${money(b.base)} · paid off` : `${money(put)} of ${money(b.base)}`;
     const t = isCurrent ? today.perBill[b.id] : null;
     const right = done
       ? '<span class="covered-label">Covered</span>'
-      : `${money(b.usd - put)} <span class="muted">to go</span>${cadNote(b.usd - put, b, 'cad-sub')}`;
+      : `${money(b.base - put)} <span class="muted">to go</span>${cadNote(b.base - put, b, 'cad-sub')}`;
     const tag = b.kind === 'estimate' ? '<span class="kind-tag">Estimate</span>' : '';
     const due = b.kind === 'bill' && b.dueDay ? `<span class="due">due ${ordinal(b.dueDay)}</span>` : '';
     const kind = b.kind === 'oneoff' ? 'oneoff' : 'bill';
     return `<div class="bill-row tap ${done ? 'is-done' : ''}" role="button" tabindex="0" data-kind="${kind}" data-id="${b.id}" aria-label="Edit ${esc(b.name || 'item')}">
       <div class="bill-name"><div class="bn">${done ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Cost')}${tag}${due}</div><div class="bill-sub">${sub}</div></div>
       <div class="bar ${done ? 'done' : ''} ${wToday > 0 ? 'has-today' : ''}"><div style="width:${wBefore}%"></div><div class="today" style="width:${wToday}%"></div></div>
-      <div class="bill-amt">${right}${t ? `<span class="today-tag">+${money(t.usd)} today</span>` : ''}</div>
+      <div class="bill-amt">${right}${t ? `<span class="today-tag">+${money(t.base)} today</span>` : ''}</div>
     </div>`;
   };
   const section = (title, totalLabel, addKind, addLabel, items, emptyText) => `
@@ -564,18 +610,18 @@ function renderBills() {
 
   const recurring = rows.filter((r) => r.b.kind !== 'oneoff');
   const extras = rows.filter((r) => r.b.kind === 'oneoff');
-  const sumUsd = (list) => list.reduce((a, r) => a + r.b.usd, 0);
+  const sumBase = (list) => list.reduce((a, r) => a + r.b.base, 0);
   const incomeItems = S.income.filter((i) => i.amount > 0 && (i.recurring || i.month === viewMonth));
-  let html = section('Monthly bills', recurring.length ? `${money(sumUsd(recurring))}/mo` : '', 'bill', 'Add monthly bill',
+  let html = section('Monthly bills', recurring.length ? `${money(sumBase(recurring))}/mo` : '', 'bill', 'Add monthly bill',
     recurring.map(rowHtml), 'Rent, phone, insurance and anything else you pay every month.');
-  html += section(`One-off expenses`, extras.length ? money(sumUsd(extras)) : '', 'oneoff', 'Add one-off expense',
+  html += section(`One-off expenses`, extras.length ? money(sumBase(extras)) : '', 'oneoff', 'Add one-off expense',
     extras.map(rowHtml), `Nothing planned for ${esc(monthName)} yet. Add one-time costs like a repair or a gift.`);
   if (incomeItems.length) {
     html += `<div class="cost-group">
       <div class="sec-head"><h3>Other income</h3><span class="sec-total">${money(income)}</span></div>
       ${incomeItems.map((i) => `<div class="income-row tap" role="button" tabindex="0" data-kind="income" data-id="${i.id}" aria-label="Edit ${esc(i.name || 'income')}">
         <span>${esc(i.name || 'Income')}<span class="due">${i.recurring ? 'every month' : 'this month only'}</span></span>
-        <span class="income-amt">+${money(billUsd(i))}${cadNote(billUsd(i), i)}</span>
+        <span class="income-amt">+${money(itemBase(i))}${cadNote(itemBase(i), i)}</span>
       </div>`).join('')}
       <button type="button" class="add-btn" data-add="income">+ Add other income</button>
     </div>`;
@@ -584,7 +630,7 @@ function renderBills() {
   $('add-income').hidden = incomeItems.length > 0;
 
   const fx = S.fx;
-  $('fx-note').textContent = [...bills, ...incomeItems].some((b) => b.currency === 'CAD')
+  $('fx-note').textContent = [...bills, ...incomeItems].some((b) => b.currency !== BASE())
     ? `1 CAD = ${fx.rate.toFixed(4)} USD${fx.date ? ` · ${fx.date}` : ' · default rate'}`
     : '';
 }
@@ -623,7 +669,7 @@ function entryRow(e) {
   const meta = [
     e.desc ? esc(entryProjectName(e)) : '',
     `${fmtTime(entryStart(e))} – ${fmtTime(entryEnd(e))}`,
-    `${money(e.rate)}/hr`,
+    `${(e.currency || 'USD') === BASE() ? money(e.rate) : moneyIn(e.rate, e.currency || 'USD')}/hr`,
     blocks > 1 ? `paused ${blocks - 1}×` : '',
   ].filter(Boolean).join(' · ');
   return `<div class="entry" data-id="${e.id}">
@@ -645,7 +691,7 @@ function groupBy(list, keyFn) {
 
 function goalBadge(dayKey, items) {
   if (S.daysOff[dayKey]) return '<span class="goal-badge">Day off</span>';
-  const goal = S.dailyGoals[dayKey];
+  const goal = S.dailyGoals[dayKey] > 0 ? toBase(S.dailyGoals[dayKey], 'USD') : 0;
   if (!(goal > 0)) return '';
   const earned = items.reduce((a, e) => a + entryGross(e), 0);
   return earned >= goal - 0.004
@@ -664,7 +710,7 @@ function dayGroup(dayKey, items) {
 
 function renderHistory() {
   const list = S.entries.filter((e) => monthKey(entryStart(e)) === viewMonth).sort((a, b) => entryStart(b) - entryStart(a));
-  const outside = S.outside[viewMonth] || 0;
+  const outside = toBase(S.outside[viewMonth] || 0, 'USD');
   let html = '';
 
   if (!list.length && !outside) {
@@ -749,6 +795,8 @@ function openEntry(id) {
   $('entry-title').textContent = e ? 'Edit entry' : 'Add time';
   $('e-desc').value = e?.desc || '';
   $('e-project').value = e ? (projectById(e.projectId)?.name || e.projectName || '') : $('t-project').value;
+  editing.currency = e ? (e.currency || 'USD') : BASE();
+  $('e-rate-label').textContent = `Rate (${editing.currency}/hr)`;
   $('e-rate').value = e ? e.rate : currentRate();
   $('e-error').textContent = '';
   renderEntryEditor();
@@ -825,7 +873,7 @@ function updateEntrySummary() {
   const last = blocks[blocks.length - 1];
   const ok = blocks.every((b) => Number.isFinite(b.start) && b.ms > 0);
   $('e-summary').textContent = ok
-    ? `${fmtTime(blocks[0].start)} – ${fmtTime(last.start + last.ms)} · ${fmtClock(ms)}${ms % MINUTE ? ` (${fmtHours(billableMs(ms))} billed)` : ''} · ${money((billableMs(ms) / HOUR) * rate)}`
+    ? `${fmtTime(blocks[0].start)} – ${fmtTime(last.start + last.ms)} · ${fmtClock(ms)}${ms % MINUTE ? ` (${fmtHours(billableMs(ms))} billed)` : ''} · ${money(toBase((billableMs(ms) / HOUR) * rate, editing.currency || BASE()))}`
     : '';
 }
 
@@ -902,7 +950,7 @@ function saveEntry(ev) {
     if (segments[i].start < segments[i - 1].end) { err.textContent = "Two time blocks overlap. Adjust a start time so they don't double-count."; return; }
   }
   const p = upsertProject($('e-project').value, rate);
-  const data = { projectId: p?.id || null, projectName: p?.name || '', rate, desc: $('e-desc').value.trim(), segments };
+  const data = { projectId: p?.id || null, projectName: p?.name || '', rate, currency: editing.currency, desc: $('e-desc').value.trim(), segments };
   if (editing.id) Object.assign(S.entries.find((x) => x.id === editing.id), data);
   else S.entries.push({ id: uid(), ...data });
   viewMonth = monthKey(segments[0].start);
@@ -1004,7 +1052,7 @@ function openItem(kind, id) {
   $('i-name').value = it?.name || '';
   $('i-name').placeholder = placeholders[kind];
   $('i-amount').value = it?.amount || '';
-  $('i-currency').value = it?.currency || (kind === 'income' ? 'USD' : 'CAD');
+  $('i-currency').value = it?.currency || (kind === 'income' ? BASE() : 'CAD');
   $('i-bill-extra').hidden = kind !== 'bill';
   $('i-category').value = it?.category || '';
   $('i-due').value = it?.dueDay || '';
@@ -1064,13 +1112,14 @@ function deleteItem() {
 
 function openOutside() {
   $('extra-help').textContent = `Money you earned in ${monthLabel(viewMonth)} that isn't logged here, like hours tracked before you started using this app. It counts toward that month's bills.`;
-  $('x-amount').value = S.outside[viewMonth] || '';
+  $('x-label').textContent = `Amount (${BASE()})`;
+  $('x-amount').value = S.outside[viewMonth] ? Math.round(toBase(S.outside[viewMonth], 'USD') * 100) / 100 : '';
   $('extra-dialog').showModal();
 }
 function saveOutside(ev) {
   ev.preventDefault();
   const v = parseFloat($('x-amount').value);
-  if (Number.isFinite(v) && v > 0) S.outside[viewMonth] = Math.round(v * 100) / 100;
+  if (Number.isFinite(v) && v > 0) S.outside[viewMonth] = Math.round(fromBase(v, 'USD') * 100) / 100;
   else delete S.outside[viewMonth];
   save();
   $('extra-dialog').close();
@@ -1082,6 +1131,7 @@ function saveOutside(ev) {
 function openSettings() {
   renderProjectsEditor();
   $('s-alloc').value = S.settings.allocation;
+  $('s-base').value = BASE();
   $('s-tax-on').checked = S.settings.taxEnabled;
   $('s-tax-rate').value = S.settings.taxRate;
   $('s-tax-rate').disabled = !S.settings.taxEnabled;
@@ -1100,7 +1150,7 @@ function renderProjectsEditor() {
   $('projects-edit').innerHTML = S.projects.length ? S.projects.map((p) => `
     <div class="edit-row project" data-id="${p.id}">
       <input type="text" data-k="name" value="${esc(p.name)}" aria-label="Project name">
-      <input type="number" data-k="rate" value="${p.rate}" min="0" step="0.5" inputmode="decimal" aria-label="Rate">
+      <input type="number" data-k="rate" value="${projectRate(p)}" min="0" step="any" inputmode="decimal" aria-label="Rate per hour in ${BASE()}">
       <button type="button" class="ghost danger-text" data-del aria-label="Delete project">✕</button>
     </div>`).join('') : '<p class="muted small">Projects are added automatically when you start a timer with a new project name.</p>';
 }
@@ -1118,7 +1168,7 @@ function onProjectsEdit(ev) {
     return;
   }
   const k = ev.target.dataset.k;
-  if (k === 'rate') { const v = parseFloat(ev.target.value); if (Number.isFinite(v) && v >= 0) p.rate = v; }
+  if (k === 'rate') { const v = parseFloat(ev.target.value); if (Number.isFinite(v) && v >= 0) { p.rate = v; p.currency = BASE(); } }
   else if (k === 'name' && ev.target.value.trim()) {
     p.name = ev.target.value.trim();
     S.entries.forEach((e) => { if (e.projectId === p.id) e.projectName = p.name; });
@@ -1139,11 +1189,11 @@ function exportJson() {
 
 function exportCsv() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const rows = [['Date', 'Start', 'End', 'Project', 'Description', 'Hours worked', 'Hours billed', 'Rate (USD)', 'Earned (USD)', 'Time blocks']];
+  const rows = [['Date', 'Start', 'End', 'Project', 'Description', 'Hours worked', 'Hours billed', 'Rate', 'Rate currency', `Earned (${BASE()})`, 'Time blocks']];
   [...S.entries].sort((a, b) => entryStart(a) - entryStart(b)).forEach((e) => {
     rows.push([
       localDateStr(entryStart(e)), toLocalInput(entryStart(e)).replace('T', ' '), toLocalInput(entryEnd(e)).replace('T', ' '),
-      entryProjectName(e), e.desc, (entryMs(e) / HOUR).toFixed(4), (entryBillableMs(e) / HOUR).toFixed(4), e.rate.toFixed(2), entryGross(e).toFixed(2), e.segments.length,
+      entryProjectName(e), e.desc, (entryMs(e) / HOUR).toFixed(4), (entryBillableMs(e) / HOUR).toFixed(4), e.rate.toFixed(2), e.currency || 'USD', entryGross(e).toFixed(2), e.segments.length,
     ]);
   });
   download(`hourly-time-${localDateStr()}.csv`, rows.map((r) => r.map(q).join(',')).join('\n'), 'text/csv');
@@ -1216,10 +1266,18 @@ function wire() {
   $('t-go').onclick = timerGo;
   $('t-stop').onclick = timerStop;
   $('t-discard').onclick = timerDiscard;
-  $('t-rate').addEventListener('input', onTimerInput);
+  $('t-rate').addEventListener('input', () => { onTimerInput(); renderDaily(); });
+  $('t-rate').addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') { ev.preventDefault(); stepRate(ev.key === 'ArrowUp' ? 1 : -1); }
+  });
+  $('rate-wrap').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-rstep]');
+    if (b) stepRate(+b.dataset.rstep);
+    else $('t-rate').focus();
+  });
   $('t-project').addEventListener('input', () => {
     const p = projectByName($('t-project').value);
-    if (p) $('t-rate').value = p.rate;
+    if (p) $('t-rate').value = projectRate(p);
     onTimerInput();
   });
 
@@ -1227,6 +1285,13 @@ function wire() {
   $('m-next').onclick = () => { if (viewMonth < shiftMonth(monthKey(Date.now()), 12)) { viewMonth = shiftMonth(viewMonth, 1); renderBills(); renderHistory(); } };
 
   $('s-alloc').onchange = (e) => { S.settings.allocation = e.target.value; save(); renderBills(); };
+  $('s-base').onchange = (e) => {
+    S.settings.baseCurrency = e.target.value;
+    save();
+    applyCurrencyLabels();
+    renderAll();
+    if ($('settings-dialog').open) renderProjectsEditor();
+  };
   $('add-income').onclick = () => openItem('income', null);
   const onCostTap = (ev) => {
     const add = ev.target.closest('[data-add]');
@@ -1268,7 +1333,7 @@ function wire() {
   $('e-rate').addEventListener('input', () => { $('e-error').textContent = ''; updateEntrySummary(); });
   $('e-project').addEventListener('input', () => {
     const p = projectByName($('e-project').value);
-    if (p && !editing.id) { $('e-rate').value = p.rate; updateEntrySummary(); }
+    if (p && !editing.id) { $('e-rate').value = projectRate(p); updateEntrySummary(); }
   });
 
   // Bill / expense / income form
@@ -1341,6 +1406,7 @@ setInterval(() => {
 }, 250);
 
 wire();
+applyCurrencyLabels();
 syncTimerInputs();
 save();
 renderAll();
