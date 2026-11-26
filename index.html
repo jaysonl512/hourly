@@ -20,36 +20,50 @@
 </header>
 
 <main>
-  <!-- Timer -->
-  <section class="card timer" id="timer-card">
-    <input id="t-desc" class="desc" type="text" placeholder="What are you working on?" autocomplete="off">
-    <div class="timer-fields">
-      <label class="field">
-        <span>Project</span>
-        <input id="t-project" type="text" list="project-list" placeholder="Project name" autocomplete="off">
-      </label>
-      <label class="field rate">
-        <span>Rate (USD/hr)</span>
-        <input id="t-rate" type="number" inputmode="decimal" min="0" step="0.5" value="30">
+  <!-- Dashboard: project and rate, session timer, today's progress -->
+  <section class="card timer dash" id="timer-card">
+    <div class="dash-sec dash-inputs">
+      <input id="t-project" type="text" list="project-list" placeholder="Project" aria-label="Project" autocomplete="off">
+      <label class="rate-input" title="Hourly rate (USD)">
+        <span aria-hidden="true">$</span>
+        <input id="t-rate" type="number" inputmode="decimal" min="0" step="0.5" value="30" aria-label="Hourly rate in USD">
+        <span aria-hidden="true">/hr</span>
       </label>
     </div>
-    <div class="timer-main">
-      <div>
+
+    <div class="dash-sec dash-timer">
+      <div class="session">
         <div id="clock" class="clock">00:00:00</div>
-        <div class="muted small"><span id="t-state">Ready</span> · <span id="t-earn">$0.00</span> this session</div>
+        <div class="session-earn"><span id="t-earn">$0.00</span> <span class="muted">this session</span><span id="t-state" class="state-pill" hidden>Paused</span></div>
       </div>
       <div class="timer-buttons">
-        <button id="t-go" class="primary big">Start</button>
-        <button id="t-stop" class="big" hidden>Stop and save</button>
-        <button id="t-discard" class="ghost danger-text" hidden>Discard</button>
+        <button id="t-go" class="primary">Start</button>
+        <button id="t-stop" hidden title="Stop and save this session">Stop</button>
+        <button id="t-discard" class="ghost discard" hidden aria-label="Discard this session" title="Discard this session">✕</button>
       </div>
     </div>
-  </section>
 
-  <!-- Today -->
-  <section class="card today" id="today-card">
-    <div class="today-head"><h3>Today</h3><span class="today-total" id="today-total"></span></div>
-    <div id="today-body"></div>
+    <div class="dash-sec dash-daily" id="daily">
+      <div class="daily-top">
+        <div class="metric">
+          <div class="d-label">Earned today<span id="d-hours"></span></div>
+          <div class="d-value">
+            <span id="d-earned">$0.00</span><span id="d-target" class="d-target"></span>
+            <button type="button" id="d-info" class="info-btn" aria-label="How today's goal is calculated" aria-expanded="false" aria-controls="d-pop">i</button>
+          </div>
+        </div>
+        <div class="metric right">
+          <div class="d-label" id="d-right-label">Est. work remaining</div>
+          <div class="d-value" id="d-right-value">–</div>
+        </div>
+      </div>
+      <div class="bar daily-bar" id="d-bar"><div></div><div class="today"></div></div>
+      <div class="daily-foot"><span id="d-foot-left"></span><span id="d-foot-right"></span></div>
+      <div class="info-pop" id="d-pop" role="dialog" aria-label="Today's goal details" hidden>
+        <dl id="d-pop-list"></dl>
+        <button type="button" class="link-btn" data-open-daysoff>Manage days off</button>
+      </div>
+    </div>
   </section>
 
   <!-- Month nav -->
@@ -190,6 +204,10 @@
     <p class="muted small">Each project remembers the last rate you used for it.</p>
     <div id="projects-edit"></div>
     <button type="button" class="ghost small-btn" id="project-add">+ Add project</button>
+
+    <h4>Work schedule</h4>
+    <p class="muted small">Weekdays get a daily goal. Take days off for holidays or vacation and the goal spreads over the days you work.</p>
+    <button type="button" class="small-btn" data-open-daysoff>Manage days off</button>
 
     <h4>Bill order</h4>
     <label class="field"><span>How your earnings fill your bills</span>

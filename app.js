@@ -164,7 +164,7 @@ function timerGo() {
     S.timer = {
       projectName: $('t-project').value.trim(),
       rate: currentRate(),
-      desc: $('t-desc').value.trim(),
+      desc: '',
       segments: [{ start: now, end: null }],
     };
   } else if (timerRunning()) {
@@ -189,7 +189,6 @@ function timerStop() {
   }
   viewMonth = monthKey(now);
   save();
-  $('t-desc').value = '';
   renderAll();
 }
 
@@ -198,17 +197,15 @@ function timerDiscard() {
   const prev = S.timer;
   S.timer = null;
   save();
-  $('t-desc').value = '';
   renderAll();
   toast('Timer discarded', () => { S.timer = prev; save(); syncTimerInputs(); renderAll(); });
 }
 
-/** Keep the timer's project / rate / description in sync with the inputs while it exists. */
+/** Keep the timer's project and rate in sync with the inputs while it exists. */
 function onTimerInput() {
   if (!S.timer) return;
   S.timer.projectName = $('t-project').value.trim();
   S.timer.rate = currentRate();
-  S.timer.desc = $('t-desc').value.trim();
   save();
   renderTick();
 }
@@ -217,7 +214,6 @@ function syncTimerInputs() {
   if (!S.timer) return;
   $('t-project').value = S.timer.projectName || '';
   $('t-rate').value = S.timer.rate;
-  $('t-desc').value = S.timer.desc || '';
 }
 
 // ---------- Rendering ----------
@@ -230,8 +226,7 @@ function renderTick() {
   card.classList.toggle('paused', !!S.timer && !running);
   $('clock').textContent = fmtClock(ms);
   $('t-earn').textContent = money((billableMs(ms) / HOUR) * (S.timer ? S.timer.rate : currentRate()));
-  const n = S.timer ? S.timer.segments.length : 0;
-  $('t-state').textContent = !S.timer ? 'Ready' : running ? 'Running' : `Paused${n > 1 ? ` · ${n} blocks` : ''}`;
+  $('t-state').hidden = !S.timer || running;
   document.title = S.timer ? `${running ? '▶' : '❚❚'} ${fmtClock(ms)} · Hourly` : 'Hourly';
 }
 
@@ -341,10 +336,13 @@ function dailyGoal(bills) {
   const total = bills.reduce((a, b) => a + b.usd, 0);
   const before = monthGross(monthKey(now), startOfToday());
   const remaining = Math.max(0, total - toNet(before.gross + before.outside) - monthIncome(monthKey(now)));
+
   const workday = isWorkday(now);
   const daysLeft = workdaysLeftInMonth(now);
   const target = workday && daysLeft > 0 ? grossFromNet(remaining / daysLeft) : 0;
-  return { total, remaining, workday, dayOff: isWeekday(now) && isDayOff(now), daysLeft, target };
+  const income = monthIncome(monthKey(now));
+  const earnedBefore = toNet(before.gross + before.outside);
+  return { total, income, earnedBefore, remaining, workday, dayOff: isWeekday(now) && isDayOff(now), daysLeft, target };
 }
 
 /**
@@ -352,20 +350,21 @@ function dailyGoal(bills) {
  * Falls back to last month, then to the timer's rate, when there's no history yet.
  */
 function averageRate() {
+  // Tracked hourly work only: other income and outside earnings have no hours, so they're left out.
   const calc = (key) => {
-    let g = 0, ms = 0;
-    for (const e of S.entries) if (monthKey(entryStart(e)) === key) { g += entryGross(e); ms += entryBillableMs(e); }
-    return ms >= MINUTE ? g / (ms / HOUR) : null;
+    let earned = 0, ms = 0;
+    for (const e of S.entries) if (monthKey(entryStart(e)) === key) { earned += entryGross(e); ms += entryBillableMs(e); }
+    return ms >= MINUTE && earned > 0 ? { rate: earned / (ms / HOUR), earned, ms } : null;
   };
-  const name = (key) => new Date(+key.slice(0, 4), +key.slice(5) - 1, 1).toLocaleDateString(undefined, { month: 'long' });
+  const name = (key, style) => new Date(+key.slice(0, 4), +key.slice(5) - 1, 1).toLocaleDateString(undefined, { month: style });
   const cur = monthKey(Date.now());
   const prev = shiftMonth(cur, -1);
   const a = calc(cur);
-  if (a > 0) return { rate: a, label: `your ${name(cur)} average` };
+  if (a) return { ...a, source: 'month', month: name(cur, 'long'), short: 'avg.' };
   const b = calc(prev);
-  if (b > 0) return { rate: b, label: `your ${name(prev)} average` };
+  if (b) return { ...b, source: 'prev', month: name(prev, 'long'), short: `${name(prev, 'short')} avg.` };
   const r = S.timer ? S.timer.rate : currentRate();
-  return r > 0 ? { rate: r, label: 'your current rate' } : null;
+  return r > 0 ? { rate: r, source: 'rate', short: 'project rate' } : null;
 }
 
 /** Work time needed to earn `usdAmount` at `rate`, rounded up to the whole minute (pay is per whole minute). */
@@ -382,56 +381,102 @@ function recordGoal(goal) {
 /** Small grey CAD amount shown next to a USD figure for CAD bills. */
 const cadNote = (usdAmt, b, cls = 'cad-inline') => (b.currency === 'CAD' ? `<span class="${cls}">${esc(cad.format(usdAmt / S.fx.rate))}</span>` : '');
 
-/** " · about 3h 26m of work at $32.00/hr (your November average)" */
-function timeLeft(usdLeft) {
-  const avg = averageRate();
-  if (!avg) return '';
-  return ` · about ${fmtHours(timeToEarn(usdLeft, avg.rate))} of work <span class="muted time-basis">at ${money(avg.rate)}/hr (${esc(avg.label)})</span>`;
+// ---------- Today's progress (dashboard card) ----------
+//
+// Updates fixed elements in place (no re-render), so the card never jumps
+// between states and can refresh every second while the timer runs.
+
+/** Earnings and time logged today (including a running timer). */
+function todayTotals() {
+  const cur = monthKey(Date.now());
+  const all = monthGross(cur);
+  const before = monthGross(cur, startOfToday());
+  return { gross: all.gross - before.gross, ms: all.ms - before.ms };
 }
 
-function renderToday(bills, today, goal) {
-  const earned = today.gross;
-  $('today-total').textContent = today.ms > 0 ? fmtHours(today.ms) : '';
-  const offCount = upcomingDaysOff();
-  const offLink = `<button type="button" class="link-btn" data-open-daysoff>${offCount ? `Days off (${offCount})` : 'Days off'}</button>`;
-  const big = `<div class="goal-line"><span class="goal-big">${money(earned)}</span>`;
-  let head;
-  if (!bills.length) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Add your monthly costs to get a daily goal.</p>`;
-  } else if (goal.dayOff) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">You've taken today off, so there's no goal. Anything you earn is extra. · ${offLink}</p>`;
-  } else if (!goal.workday) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">It's the weekend, so there's no goal today. Everything you earn is extra. · ${offLink}</p>`;
-  } else if (goal.target <= 0) {
-    head = `${big}<span class="muted">earned today</span></div><p class="muted small">Your costs for this month are covered. Everything you earn today is extra. · ${offLink}</p>`;
-  } else {
-    const extra = Math.max(0, earned - goal.target);
-    const scale = Math.max(earned, goal.target);
-    const blue = (Math.min(earned, goal.target) / scale) * 100;
-    const green = (extra / scale) * 100;
-    const status = extra > 0.004
-      ? `<span class="goal-hit">✓ Goal reached</span> · +${money(extra)} extra`
-      : earned >= goal.target - 0.004 ? '<span class="goal-hit">✓ Goal reached</span>' : `${money(goal.target - earned)} to go${timeLeft(goal.target - earned)}`;
-    const tax = S.settings.taxEnabled ? `, plus your ${S.settings.taxRate}% tax set-aside` : '';
-    head = `${big}<span class="muted">of ${money(goal.target)} goal</span></div>
-      <div class="bar big ${green > 0 ? 'has-today' : ''}"><div style="width:${blue}%"></div><div class="today" style="width:${green}%"></div></div>
-      <div class="goal-status small">${status}</div>
-      <p class="muted small goal-basis">${money(goal.remaining)} left to cover ÷ ${goal.daysLeft} workday${goal.daysLeft === 1 ? '' : 's'} left this month${tax} · ${offLink}</p>`;
-  }
+function setBar(el, bluePct, greenPct) {
+  el.children[0].style.width = bluePct + '%';
+  el.children[1].style.width = greenPct + '%';
+  el.classList.toggle('has-today', greenPct > 0 && bluePct > 0);
+}
 
-  let items = [];
-  if (today.ms > 0) {
-    items = bills.filter((b) => today.perBill[b.id]).map((b) => {
-      const t = today.perBill[b.id];
-      return `<div class="today-item ${t.finished ? 'finished' : ''}">
-        <span>${t.finished ? '<span class="tick">✓</span>' : ''}${esc(b.name || 'Bill')}${t.finished ? ' <span class="muted">paid off</span>' : ''}</span>
-        <span class="today-amt">+${money(t.usd)}${cadNote(t.usd, b)}</span>
-      </div>`;
-    });
-    if (today.extra > 0.004) items.push(`<div class="today-item finished"><span>Extra beyond costs</span><span class="today-amt">+${money(today.extra)}</span></div>`);
+function renderDaily() {
+  const items = costItems();
+  const goal = dailyGoal(items);
+  recordGoal(goal);
+  const { gross: earned, ms } = todayTotals();
+  const avg = averageRate();
+  const hasGoal = items.length > 0 && goal.workday && goal.target > 0;
+
+  $('d-earned').textContent = money(earned);
+  $('d-hours').textContent = ms > 0 ? ` · ${fmtHours(ms)}` : '';
+  $('d-target').textContent = hasGoal ? ` / ${money(goal.target)}` : '';
+  const right = $('d-right-value');
+
+  if (hasGoal) {
+    const reached = earned >= goal.target - 0.004;
+    const surplus = Math.max(0, earned - goal.target);
+    const scale = Math.max(earned, goal.target);
+    setBar($('d-bar'), (Math.min(earned, goal.target) / scale) * 100, (surplus / scale) * 100);
+    if (reached) {
+      $('d-right-label').textContent = 'Surplus earned';
+      right.textContent = '+' + money(surplus);
+      right.className = 'd-value good';
+      $('d-foot-left').innerHTML = '<span class="goal-hit">✓ Daily goal reached</span>';
+      $('d-foot-right').textContent = 'Now earning surplus';
+    } else {
+      const left = goal.target - earned;
+      $('d-right-label').textContent = 'Est. work remaining';
+      right.textContent = avg ? fmtHours(timeToEarn(left, avg.rate)) : '–';
+      right.className = 'd-value';
+      $('d-foot-left').textContent = `${money(left)} left to earn`;
+      $('d-foot-right').textContent = avg ? `Based on ${money(avg.rate)}/hr ${avg.short}` : 'Set an hourly rate to estimate time';
+    }
+  } else {
+    // No goal today (weekend, day off, costs covered, or no costs yet): everything is extra.
+    setBar($('d-bar'), 0, earned > 0 ? 100 : 0);
+    $('d-right-label').textContent = 'Extra earned';
+    right.textContent = '+' + money(earned);
+    right.className = earned > 0 ? 'd-value good' : 'd-value';
+    $('d-foot-left').textContent = !items.length ? 'Add monthly costs to set a daily goal'
+      : goal.dayOff ? 'Day off · no goal today'
+      : !goal.workday ? 'Weekend · no goal today'
+      : `${monthLabel(monthKey(Date.now())).split(' ')[0]} costs are covered`;
+    $('d-foot-right').textContent = 'Everything you earn is extra';
   }
-  $('today-body').innerHTML = head
-    + (items.length ? `<div class="today-sub-head">Where today's money went</div>${items.join('')}` : '');
+  renderGoalDetails(goal, hasGoal, earned, avg);
+}
+
+/** The ⓘ popover: how today's goal and the time estimate are worked out. */
+function renderGoalDetails(goal, hasGoal, earned, avg) {
+  const month = monthLabel(monthKey(Date.now())).split(' ')[0];
+  const row = (k, v, sub) => `<div><dt>${k}</dt><dd>${v}</dd>${sub ? `<p>${sub}</p>` : ''}</div>`;
+  const rows = [];
+  const parts = [`${money(goal.total)} costs`];
+  if (goal.income > 0) parts.push(`${money(goal.income)} other income`);
+  if (goal.earnedBefore > 0) parts.push(`${money(goal.earnedBefore)} earned before today`);
+  rows.push(row(`Left to cover in ${month}`, money(goal.remaining), parts.join(' − ')));
+  rows.push(row('Workdays left, incl. today', String(goal.daysLeft), 'Monday to Friday, minus days off'));
+  if (hasGoal) {
+    const tax = S.settings.taxEnabled ? `, then grossed up for your ${S.settings.taxRate}% tax set-aside` : '';
+    rows.push(row("Today's goal", money(goal.target), `${money(goal.remaining)} ÷ ${goal.daysLeft}${tax}. It stays the same while you work; tomorrow's goal adjusts to what you earn today.`));
+  }
+  if (avg) {
+    const sub = avg.source === 'rate' ? 'Not enough logged time yet, so this uses the rate above.'
+      : `${money(avg.earned)} earned ÷ ${fmtHours(avg.ms)} logged in ${avg.month}. Other income isn't included.`;
+    rows.push(row('Average hourly rate', `${money(avg.rate)}/hr`, sub));
+    if (hasGoal && earned < goal.target - 0.004) {
+      rows.push(row('Est. work remaining', fmtHours(timeToEarn(goal.target - earned, avg.rate)), `${money(goal.target - earned)} left ÷ ${money(avg.rate)}/hr, rounded up to the minute`));
+    }
+  }
+  $('d-pop-list').innerHTML = rows.join('');
+}
+
+function toggleGoalDetails(open) {
+  const pop = $('d-pop');
+  const show = open ?? pop.hidden;
+  pop.hidden = !show;
+  $('d-info').setAttribute('aria-expanded', String(show));
 }
 
 function renderBills() {
@@ -444,9 +489,7 @@ function renderBills() {
   // The Today card is always about this month; the list below follows the month you're viewing.
   const curItems = costItems();
   const today = todayBreakdown(curItems);
-  const goal = dailyGoal(curItems);
-  recordGoal(goal);
-  renderToday(curItems, today, goal);
+  renderDaily();
 
   const bills = isCurrent ? curItems : costItems(viewMonth);
   const { gross, ms, outside } = monthGross(viewMonth);
@@ -881,13 +924,6 @@ function deleteEntry(id) {
 
 let calMonth = null;
 
-/** Weekdays taken off from today through the end of this month. */
-function upcomingDaysOff() {
-  const today = localDateStr();
-  const month = today.slice(0, 7);
-  return Object.keys(S.daysOff).filter((k) => S.daysOff[k] && k >= today && k.startsWith(month)).length;
-}
-
 function openDaysOff() {
   calMonth = monthKey(Date.now());
   renderCal();
@@ -1180,7 +1216,6 @@ function wire() {
   $('t-go').onclick = timerGo;
   $('t-stop').onclick = timerStop;
   $('t-discard').onclick = timerDiscard;
-  $('t-desc').addEventListener('input', onTimerInput);
   $('t-rate').addEventListener('input', onTimerInput);
   $('t-project').addEventListener('input', () => {
     const p = projectByName($('t-project').value);
@@ -1245,7 +1280,12 @@ function wire() {
   $('extra-form').addEventListener('submit', saveOutside);
 
   // Days off
-  $('today-body').addEventListener('click', (ev) => { if (ev.target.closest('[data-open-daysoff]')) openDaysOff(); });
+  document.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-open-daysoff]')) { toggleGoalDetails(false); openDaysOff(); return; }
+    if (ev.target.closest('#d-info')) { toggleGoalDetails(); return; }
+    if (!$('d-pop').hidden && !ev.target.closest('#d-pop')) toggleGoalDetails(false);
+  });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && !$('d-pop').hidden) toggleGoalDetails(false); });
   $('cal-grid').addEventListener('click', (ev) => { const b = ev.target.closest('[data-date]'); if (b) toggleDayOff(b.dataset.date); });
   $('cal-prev').onclick = () => { calMonth = shiftMonth(calMonth, -1); renderCal(); };
   $('cal-next').onclick = () => { calMonth = shiftMonth(calMonth, 1); renderCal(); };
@@ -1289,10 +1329,11 @@ function wire() {
 }
 
 // Live clock: redraw 4x a second (display only — time comes from timestamps).
-let lastBillsRender = 0;
+let lastBillsRender = 0, lastDailyRender = 0;
 setInterval(() => {
   if (!S.timer) return;
   renderTick();
+  if (Date.now() - lastDailyRender >= 1000) { lastDailyRender = Date.now(); renderDaily(); }
   if (timerRunning() && Date.now() - lastBillsRender > 5000) {
     lastBillsRender = Date.now();
     renderBills();
